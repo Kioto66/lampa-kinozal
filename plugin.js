@@ -335,10 +335,20 @@
     function registerSettings() {
         if (!Lampa.SettingsApi || !Lampa.SettingsApi.addComponent || !Lampa.SettingsApi.addParam) return
         Lampa.SettingsApi.addComponent({ component: NS + 'settings', name: 'Кинозал — прототип', icon: '' })
-        Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'mode', type: 'select', values: 'mock,proxy', default: 'mock' }, field: { name: 'Источник данных', description: 'mock не делает сетевых запросов' } })
-        Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'proxy_url', type: 'input', default: '' }, field: { name: 'URL локального API', description: 'Например, http://192.168.1.10:8787' } })
-        Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'torr_url', type: 'input', default: '' }, field: { name: 'URL TorrServer', description: 'Добавление выполняется только по кнопке карточки' } })
-        Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'limit', type: 'select', values: '5,10,20', default: '10' }, field: { name: 'Результатов на странице' } })
+        Lampa.SettingsApi.addParam({
+            component: 'more',
+            param: { name: NS + '_open_settings', type: 'button' },
+            field: { name: 'Кинозал — прототип', description: 'Настройки источника топов Kinozal' },
+            onChange: function () {
+                if (Lampa.Settings && Lampa.Settings.create) {
+                    Lampa.Settings.create(NS + 'settings', { onBack: function () { Lampa.Settings.create('more') } })
+                }
+            }
+        })
+        Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'mode', type: 'select', values: { mock: 'mock', proxy: 'proxy' }, default: 'mock' }, field: { name: 'Источник данных', description: 'mock не делает сетевых запросов' } })
+        Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'proxy_url', type: 'input', values: '', default: '' }, field: { name: 'URL локального API', description: 'Например, http://192.168.1.10:8787' } })
+        Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'torr_url', type: 'input', values: '', default: '' }, field: { name: 'URL TorrServer', description: 'Добавление выполняется только по кнопке карточки' } })
+        Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'limit', type: 'select', values: { '5': '5', '10': '10', '20': '20' }, default: '10' }, field: { name: 'Результатов на странице' } })
     }
 
     function addMenuItem() {
