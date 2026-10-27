@@ -6,6 +6,9 @@
 
     var NS = 'lampa_kinozal_'
     var COMPONENT = 'lampa_kinozal_proto'
+    // Default address of the local API on the home network. It can still be
+    // changed in settings if the computer receives another LAN address.
+    var DEFAULT_PROXY_URL = 'http://192.168.11.71:8787'
     var TOP_CATEGORIES = [
         { value: 'movies', title: 'Фильмы' },
         { value: 'series', title: 'Сериалы общие' },
@@ -205,7 +208,7 @@
     function ListScreen(object) {
         var root = $('<div class="lampa-kinozal-proto"></div>')
         var scroll = new Lampa.Scroll({ mask: true, over: true })
-        var provider = field('mode', 'mock') === 'proxy' ? new ProxyProvider(field('proxy_url', '')) : new MockProvider()
+        var provider = field('mode', 'mock') === 'proxy' ? new ProxyProvider(field('proxy_url', '') || DEFAULT_PROXY_URL) : new MockProvider()
         var query = String(object.query || '')
         var category = String(object.category || field('category', 'movies'))
         var period = String(object.period || field('period', 'week'))
@@ -346,7 +349,7 @@
             }
         })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'mode', type: 'select', values: { mock: 'mock', proxy: 'proxy' }, default: 'mock' }, field: { name: 'Источник данных', description: 'mock не делает сетевых запросов' } })
-        Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'proxy_url', type: 'input', values: '', default: '' }, field: { name: 'URL локального API', description: 'Например, http://192.168.1.10:8787' } })
+        Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'proxy_url', type: 'input', values: '', default: DEFAULT_PROXY_URL }, field: { name: 'URL локального API', description: 'По умолчанию: ' + DEFAULT_PROXY_URL } })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'torr_url', type: 'input', values: '', default: '' }, field: { name: 'URL TorrServer', description: 'Добавление выполняется только по кнопке карточки' } })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'limit', type: 'select', values: { '5': '5', '10': '10', '20': '20' }, default: '10' }, field: { name: 'Результатов на странице' } })
     }
