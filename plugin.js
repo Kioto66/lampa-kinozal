@@ -139,7 +139,9 @@
     function ProxyProvider(baseUrl) {
         this.baseUrl = safeHttpUrl(baseUrl).replace(/\/$/, '')
         this.network = new Lampa.Reguest()
-        this.network.timeout(15000)
+        // Browser-backed Kinozal requests can take several seconds on the
+        // first uncached request; leave enough time for a TV connection.
+        this.network.timeout(45000)
     }
     ProxyProvider.prototype.search = function (query, page, limit, done, fail, options) {
         if (!this.baseUrl) return fail('Не указан адрес локального API')
@@ -161,7 +163,7 @@
     function TorrAdapter(endpoint) {
         this.endpoint = safeHttpUrl(endpoint).replace(/\/$/, '')
         this.network = new Lampa.Reguest()
-        this.network.timeout(15000)
+        this.network.timeout(45000)
     }
     TorrAdapter.prototype.send = function (item, done, fail) {
         if (!this.endpoint) return fail('Не указан адрес TorrServer')
