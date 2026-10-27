@@ -1,0 +1,43 @@
+{
+  "page": 1,
+  "total_pages": 1,
+  "results": [
+    {
+      "id": "mock-dune-2",
+      "title": "Дюна: Часть вторая",
+      "original_title": "Dune: Part Two",
+      "year": 2024,
+      "type": "movie",
+      "poster": "",
+      "overview": "Фиктивная карточка для проверки интерфейса плагина.",
+      "quality": "1080p",
+      "codec": "H.264",
+      "audio": "Русский AC3 5.1 / English",
+      "size": "8.4 GB",
+      "duration": "02:46:00",
+      "seeds": 42,
+      "peers": 3,
+      "published_at": "2026-10-27",
+      "magnet": "magnet:?xt=urn:btih:0000000000000000000000000000000000000001"
+    },
+    {
+      "id": "mock-arcane",
+      "title": "Аркейн — сезон 1",
+      "original_title": "Arcane",
+      "year": 2021,
+      "type": "series",
+      "poster": "",
+      "overview": "Фиктивная карточка сериала для проверки списка и детализации.",
+      "quality": "2160p HDR",
+      "codec": "HEVC",
+      "audio": "Русский дубляж / English",
+      "size": "24.1 GB",
+      "duration": "09:10:00",
+      "seeds": 18,
+      "peers": 1,
+      "published_at": "2026-10-26",
+      "magnet": "magnet:?xt=urn:btih:0000000000000000000000000000000000000002"
+    }
+  ]
+}
+
