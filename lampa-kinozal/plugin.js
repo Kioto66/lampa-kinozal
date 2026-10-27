@@ -51,7 +51,9 @@
     function safeHttpUrl(value) {
         if (!value) return ''
         try {
-            var parsed = new URL(String(value))
+            var URLConstructor = window.URL || window.webkitURL
+            if (!URLConstructor) return /^https?:\/\/[^\s]+$/i.test(String(value)) ? String(value) : ''
+            var parsed = new URLConstructor(String(value))
             if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return ''
             if (parsed.username || parsed.password) return ''
             return parsed.toString()
@@ -107,6 +109,10 @@
         if (Lampa.Noty && Lampa.Noty.show) Lampa.Noty.show(message, error ? { style: 'error', time: 6000 } : undefined)
     }
 
+    function logError(message, error) {
+        if (window.console && console.error) console.error('[lampa-kinozal]', message, error || '')
+    }
+
     function MockProvider() {}
     MockProvider.prototype.search = function (query, page, limit, done) {
         var q = String(query || '').toLowerCase().trim()
@@ -152,6 +158,7 @@
     TorrAdapter.prototype.clear = function () { this.network.clear() }
 
     function addStyle() {
+        if (!Lampa.Template || !Lampa.Template.add) return
         Lampa.Template.add('lampa_kinozal_proto_style', '<style>' +
             '.lampa-kinozal-proto{padding:2em 3em;color:#fff}.lampa-kinozal-proto__hint{opacity:.65;margin:.5em 0 1.5em}.lampa-kinozal-proto__search{padding:1em 1.2em;margin-bottom:1em;background:rgba(255,255,255,.08);border-radius:.35em}.lampa-kinozal-proto__card{padding:1em 1.2em;margin:.4em 0;background:rgba(255,255,255,.06);border-radius:.35em}.lampa-kinozal-proto__meta{opacity:.7;font-size:.9em;margin-top:.35em}.lampa-kinozal-proto__detail{padding:2em 3em;max-width:60em}.lampa-kinozal-proto__detail h2{margin-top:0}.lampa-kinozal-proto__detail p{opacity:.85;line-height:1.45}' +
             '</style>')
@@ -287,6 +294,7 @@
     }
 
     function registerSettings() {
+        if (!Lampa.SettingsApi || !Lampa.SettingsApi.addComponent || !Lampa.SettingsApi.addParam) return
         Lampa.SettingsApi.addComponent({ component: NS + 'settings', name: 'Кинозал — прототип', icon: '' })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'mode', type: 'select', values: 'mock,proxy', default: 'mock' }, field: { name: 'Источник данных', description: 'mock не делает сетевых запросов' } })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'proxy_url', type: 'input', default: '' }, field: { name: 'URL локального API', description: 'Например, http://192.168.1.10:8787' } })
@@ -299,15 +307,25 @@
         btn.on('hover:enter', function () {
             Lampa.Activity.push({ url: '', title: 'Кинозал', component: COMPONENT, page: 1, query: '' })
         })
-        $('.menu .menu__list').eq(0).append(btn)
+        var menu = $('.menu .menu__list').eq(0)
+        if (menu && menu.length) menu.append(btn)
+        else if (Lampa.Menu && Lampa.Menu.addButton) {
+            Lampa.Menu.addButton('', 'Кинозал', function () {
+                Lampa.Activity.push({ url: '', title: 'Кинозал', component: COMPONENT, page: 1, query: '' })
+            })
+        }
     }
 
     function init() {
-        addStyle()
-        registerSettings()
-        if (!Lampa.Component.get(COMPONENT)) Lampa.Component.add(COMPONENT, ListScreen)
-        if (!Lampa.Component.get('lampa_kinozal_detail')) Lampa.Component.add('lampa_kinozal_detail', DetailScreen)
-        addMenuItem()
+        try { addStyle() } catch (error) { logError('Не удалось добавить стили', error) }
+        try { registerSettings() } catch (error) { logError('Настройки недоступны в этой версии LAMPA', error) }
+        try {
+            if (Lampa.Component && Lampa.Component.add) {
+                if (!Lampa.Component.get || !Lampa.Component.get(COMPONENT)) Lampa.Component.add(COMPONENT, ListScreen)
+                if (!Lampa.Component.get || !Lampa.Component.get('lampa_kinozal_detail')) Lampa.Component.add('lampa_kinozal_detail', DetailScreen)
+            }
+        } catch (error) { logError('Не удалось зарегистрировать экраны', error) }
+        try { addMenuItem() } catch (error) { logError('Не удалось добавить пункт меню', error) }
     }
 
     if (window.appready) init()
