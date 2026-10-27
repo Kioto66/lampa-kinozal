@@ -147,7 +147,10 @@
         var url = this.baseUrl + '/v1/search?q=' + encodeURIComponent(query || '') + '&page=' + page + '&limit=' + limit
         if (options.category) url += '&category=' + encodeURIComponent(options.category)
         if (options.period) url += '&period=' + encodeURIComponent(options.period)
-        this.network.get(url, function (response) {
+        // `silent` avoids a compatibility bug in some LAMPA builds where
+        // the loading-overlay path inside `get` calls an undefined `clear`.
+        // ListScreen already controls its own loader.
+        this.network.silent(url, function (response) {
             try { done(parseSearchResponse(response)) } catch (e) { fail('Локальный API вернул неверный JSON') }
         }, function (xhr, exception) {
             fail(this.network.errorDecode ? this.network.errorDecode(xhr, exception) : 'Ошибка локального API')
@@ -163,7 +166,7 @@
     TorrAdapter.prototype.send = function (item, done, fail) {
         if (!this.endpoint) return fail('Не указан адрес TorrServer')
         if (!item.magnet) return fail('У карточки нет корректной magnet-ссылки')
-        this.network.get(this.endpoint + '/v1/torrents', done, function () {
+        this.network.silent(this.endpoint + '/v1/torrents', done, function () {
             fail('TorrServer не принял раздачу')
         }, {
             magnet: item.magnet,
