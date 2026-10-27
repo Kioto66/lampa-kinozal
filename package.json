@@ -1,0 +1,9 @@
+{
+  "name": "lampa-kinozal-local-api",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Local browser-backed API adapter for the LAMPA Kinozal plugin",
+  "dependencies": {
+    "playwright-core": "1.55.0"
+  }
+}

@@ -42,6 +42,18 @@ $env:LAMPA_API_SOURCE = 'public'
 node .\api-server.js
 ```
 
+Если прямой режим получает Cloudflare, используйте браузерный режим:
+
+```powershell
+npm install
+$env:LAMPA_API_SOURCE = 'browser'
+node .\api-server.js
+```
+
+Откроется отдельный Chrome-профиль `.kinozal-browser-profile`. При первом запуске
+выполните проверку Cloudflare в этом окне вручную. Профиль отдельный: личный
+профиль Chrome не используется, а cookies не попадают в репозиторий.
+
 После запуска укажите в настройках плагина адрес компьютера в домашней сети, например:
 
 ```text
