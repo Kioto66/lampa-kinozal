@@ -4,7 +4,20 @@
 
 ## Поиск
 
-`GET {proxy}/v1/search?q={urlencoded query}&page={number}&limit={number}`
+`GET {proxy}/v1/search?q={urlencoded query}&page={number}&limit={number}&category={category}&period={period}`
+
+Поиск и карточки Kinozal должны работать без учётной записи. Авторизация нужна
+только на отдельном серверном шаге скачивания `.torrent` или передачи раздачи.
+Логин, пароль и cookies не передаются в LAMPA и не входят в ответы этого endpoint-а.
+
+Для экранов топа используются значения:
+
+- `category=series` — сериалы общие;
+- `category=series_ru` — сериалы российские;
+- `category=series_foreign` — сериалы зарубежные;
+- `category=movies` — фильмы;
+- `period=week` — неделя;
+- `period=month` — месяц.
 
 Ответ:
 

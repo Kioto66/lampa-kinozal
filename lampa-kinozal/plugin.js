@@ -6,6 +6,16 @@
 
     var NS = 'lampa_kinozal_'
     var COMPONENT = 'lampa_kinozal_proto'
+    var TOP_CATEGORIES = [
+        { value: 'movies', title: 'Фильмы' },
+        { value: 'series', title: 'Сериалы общие' },
+        { value: 'series_ru', title: 'Сериалы российские' },
+        { value: 'series_foreign', title: 'Сериалы зарубежные' }
+    ]
+    var TOP_PERIODS = [
+        { value: 'week', title: 'За неделю' },
+        { value: 'month', title: 'За месяц' }
+    ]
     var SAMPLE = [
         {
             id: 'mock-dune-2',
@@ -128,9 +138,12 @@
         this.network = new Lampa.Reguest()
         this.network.timeout(15000)
     }
-    ProxyProvider.prototype.search = function (query, page, limit, done, fail) {
+    ProxyProvider.prototype.search = function (query, page, limit, done, fail, options) {
         if (!this.baseUrl) return fail('Не указан адрес локального API')
+        options = options || {}
         var url = this.baseUrl + '/v1/search?q=' + encodeURIComponent(query || '') + '&page=' + page + '&limit=' + limit
+        if (options.category) url += '&category=' + encodeURIComponent(options.category)
+        if (options.period) url += '&period=' + encodeURIComponent(options.period)
         this.network.get(url, function (response) {
             try { done(parseSearchResponse(response)) } catch (e) { fail('Локальный API вернул неверный JSON') }
         }, function (xhr, exception) {
@@ -160,7 +173,7 @@
     function addStyle() {
         if (!Lampa.Template || !Lampa.Template.add) return
         Lampa.Template.add('lampa_kinozal_proto_style', '<style>' +
-            '.lampa-kinozal-proto{padding:2em 3em;color:#fff}.lampa-kinozal-proto__hint{opacity:.65;margin:.5em 0 1.5em}.lampa-kinozal-proto__search{padding:1em 1.2em;margin-bottom:1em;background:rgba(255,255,255,.08);border-radius:.35em}.lampa-kinozal-proto__card{padding:1em 1.2em;margin:.4em 0;background:rgba(255,255,255,.06);border-radius:.35em}.lampa-kinozal-proto__meta{opacity:.7;font-size:.9em;margin-top:.35em}.lampa-kinozal-proto__detail{padding:2em 3em;max-width:60em}.lampa-kinozal-proto__detail h2{margin-top:0}.lampa-kinozal-proto__detail p{opacity:.85;line-height:1.45}' +
+            '.lampa-kinozal-proto{padding:2em 3em;color:#fff}.lampa-kinozal-proto__hint{opacity:.65;margin:.5em 0 1.5em}.lampa-kinozal-proto__filter{padding:1em 1.2em;margin:.35em 0;background:rgba(255,255,255,.08);border-radius:.35em}.lampa-kinozal-proto__card{display:flex;align-items:center;min-height:8.5em;padding:.65em .8em;margin:.45em 0;background:rgba(255,255,255,.06);border-radius:.35em}.lampa-kinozal-proto__poster{width:6em;height:8.5em;object-fit:cover;background:rgba(255,255,255,.08);margin-right:1em}.lampa-kinozal-proto__card-body{min-width:0}.lampa-kinozal-proto__title{font-size:1.1em}.lampa-kinozal-proto__meta{opacity:.7;font-size:.9em;margin-top:.35em}.lampa-kinozal-proto__detail{padding:2em 3em;max-width:60em}.lampa-kinozal-proto__detail h2{margin-top:0}.lampa-kinozal-proto__detail p{opacity:.85;line-height:1.45}' +
             '</style>')
     }
 
@@ -194,6 +207,8 @@
         var scroll = new Lampa.Scroll({ mask: true, over: true })
         var provider = field('mode', 'mock') === 'proxy' ? new ProxyProvider(field('proxy_url', '')) : new MockProvider()
         var query = String(object.query || '')
+        var category = String(object.category || field('category', 'movies'))
+        var period = String(object.period || field('period', 'week'))
         var page = number(object.page) || 1
         var limit = number(field('limit', 10)) || 10
 
@@ -201,9 +216,12 @@
             var title = item.title + (item.year ? ' (' + item.year + ')' : '')
             var meta = [item.quality, item.codec, item.size, 'сиды: ' + item.seeds].filter(Boolean).join(' · ')
             var el = $('<div class="selector lampa-kinozal-proto__card"></div>')
-            el.append($('<div></div>').text(title))
-            if (item.original_title) el.append($('<div class="lampa-kinozal-proto__meta"></div>').text(item.original_title))
-            if (meta) el.append($('<div class="lampa-kinozal-proto__meta"></div>').text(meta))
+            if (item.poster) el.append($('<img class="lampa-kinozal-proto__poster" />').attr('src', item.poster))
+            var body = $('<div class="lampa-kinozal-proto__card-body"></div>')
+            body.append($('<div class="lampa-kinozal-proto__title"></div>').text(title))
+            if (item.original_title) body.append($('<div class="lampa-kinozal-proto__meta"></div>').text(item.original_title))
+            if (meta) body.append($('<div class="lampa-kinozal-proto__meta"></div>').text(meta))
+            el.append(body)
             el.on('hover:enter', function () {
                 Lampa.Activity.push({ url: '', title: item.title, component: 'lampa_kinozal_detail', item: item, page: 1 })
             })
@@ -212,13 +230,34 @@
 
         function render(data) {
             scroll.clear()
-            var heading = $('<div class="lampa-kinozal-proto__search selector"></div>').text(query ? 'Поиск: ' + query : 'Новый поиск')
-            heading.on('hover:enter', function () {
-                SearchModal(function (next) {
-                    Lampa.Activity.push({ url: '', title: 'Кинозал', component: COMPONENT, page: 1, query: next })
+            var periodItem = TOP_PERIODS.filter(function (item) { return item.value === period })[0] || TOP_PERIODS[0]
+            var categoryItem = TOP_CATEGORIES.filter(function (item) { return item.value === category })[0] || TOP_CATEGORIES[0]
+            var periodButton = $('<div class="selector lampa-kinozal-proto__filter"></div>').text('Период: ' + periodItem.title)
+            periodButton.on('hover:enter', function () {
+                Lampa.Select.show({
+                    title: 'Период топа',
+                    items: TOP_PERIODS,
+                    onSelect: function (item) {
+                        Lampa.Select.close()
+                        Lampa.Activity.push({ url: '', title: 'Топ раздач', component: COMPONENT, page: 1, category: category, period: item.value })
+                    },
+                    onBack: function () { Lampa.Select.close(); Lampa.Controller.toggle('content') }
                 })
             })
-            scroll.append(heading)
+            scroll.append(periodButton)
+            var categoryButton = $('<div class="selector lampa-kinozal-proto__filter"></div>').text('Раздел: ' + categoryItem.title)
+            categoryButton.on('hover:enter', function () {
+                Lampa.Select.show({
+                    title: 'Раздел топа',
+                    items: TOP_CATEGORIES,
+                    onSelect: function (item) {
+                        Lampa.Select.close()
+                        Lampa.Activity.push({ url: '', title: 'Топ раздач', component: COMPONENT, page: 1, category: item.value, period: period })
+                    },
+                    onBack: function () { Lampa.Select.close(); Lampa.Controller.toggle('content') }
+                })
+            })
+            scroll.append(categoryButton)
             if (!data.results.length) scroll.append($('<div class="lampa-kinozal-proto__hint"></div>').text('Ничего не найдено'))
             data.results.forEach(function (item) { scroll.append(cardElement(item)) })
             if (data.page < data.total_pages) {
@@ -239,7 +278,7 @@
                 if (activity && activity.loader) activity.loader(false)
                 notify(message, true)
                 render({ page: page, total_pages: 1, results: [] })
-            })
+            }, { category: category, period: period })
         }
 
         this.create = function () {
@@ -305,13 +344,13 @@
     function addMenuItem() {
         var btn = $('<li class="menu__item selector"><div class="menu__ico"></div><div class="menu__text">Кинозал</div></li>')
         btn.on('hover:enter', function () {
-            Lampa.Activity.push({ url: '', title: 'Кинозал', component: COMPONENT, page: 1, query: '' })
+        Lampa.Activity.push({ url: '', title: 'Топ раздач', component: COMPONENT, page: 1, category: 'movies', period: 'week' })
         })
         var menu = $('.menu .menu__list').eq(0)
         if (menu && menu.length) menu.append(btn)
         else if (Lampa.Menu && Lampa.Menu.addButton) {
             Lampa.Menu.addButton('', 'Кинозал', function () {
-                Lampa.Activity.push({ url: '', title: 'Кинозал', component: COMPONENT, page: 1, query: '' })
+                Lampa.Activity.push({ url: '', title: 'Топ раздач', component: COMPONENT, page: 1, category: 'movies', period: 'week' })
             })
         }
     }
