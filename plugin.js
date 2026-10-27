@@ -141,7 +141,7 @@
         this.network = new Lampa.Reguest()
         // Browser-backed Kinozal requests can take several seconds on the
         // first uncached request; leave enough time for a TV connection.
-        this.network.timeout(45000)
+        this.network.timeout(15000)
     }
     ProxyProvider.prototype.search = function (query, page, limit, done, fail, options) {
         if (!this.baseUrl) return fail('Не указан адрес локального API')
@@ -163,7 +163,7 @@
     function TorrAdapter(endpoint) {
         this.endpoint = safeHttpUrl(endpoint).replace(/\/$/, '')
         this.network = new Lampa.Reguest()
-        this.network.timeout(45000)
+        this.network.timeout(15000)
     }
     TorrAdapter.prototype.send = function (item, done, fail) {
         if (!this.endpoint) return fail('Не указан адрес TorrServer')
@@ -181,7 +181,7 @@
     function addStyle() {
         if (!Lampa.Template || !Lampa.Template.add) return
         Lampa.Template.add('lampa_kinozal_proto_style', '<style>' +
-            '.lampa-kinozal-proto{padding:2em 3em;color:#fff}.lampa-kinozal-proto__hint{opacity:.65;margin:.5em 0 1.5em}.lampa-kinozal-proto__filter{padding:1em 1.2em;margin:.35em 0;background:rgba(255,255,255,.08);border-radius:.35em}.lampa-kinozal-proto__card{display:flex;align-items:center;min-height:8.5em;padding:.65em .8em;margin:.45em 0;background:rgba(255,255,255,.06);border-radius:.35em}.lampa-kinozal-proto__poster{width:6em;height:8.5em;object-fit:cover;background:rgba(255,255,255,.08);margin-right:1em}.lampa-kinozal-proto__card-body{min-width:0}.lampa-kinozal-proto__title{font-size:1.1em}.lampa-kinozal-proto__meta{opacity:.7;font-size:.9em;margin-top:.35em}.lampa-kinozal-proto__detail{padding:2em 3em;max-width:60em}.lampa-kinozal-proto__detail h2{margin-top:0}.lampa-kinozal-proto__detail p{opacity:.85;line-height:1.45}' +
+            '.lampa-kinozal-proto{padding:2em 3em;color:#fff}.lampa-kinozal-proto__hint{opacity:.65;margin:.5em 0 1.5em}.lampa-kinozal-proto__filter{padding:1em 1.2em;margin:.35em 0;background:rgba(255,255,255,.08);border-radius:.35em}.lampa-kinozal-proto__cards{display:flex;flex-wrap:wrap;align-items:flex-start;gap:1.1em;padding:1em 0 2em}.lampa-kinozal-proto__card-action{display:flex;align-items:center;min-height:5em;padding:.65em .8em;margin:.45em 0;background:rgba(255,255,255,.06);border-radius:.35em}.lampa-kinozal-proto__detail{padding:2em 3em;max-width:60em}.lampa-kinozal-proto__detail h2{margin-top:0}.lampa-kinozal-proto__detail p{opacity:.85;line-height:1.45}' +
             '</style>')
     }
 
@@ -221,15 +221,17 @@
         var limit = number(field('limit', 10)) || 10
 
         function cardElement(item) {
+            var el = $('<div class="card selector layer--visible layer--render"></div>')
+            var view = $('<div class="card__view"></div>')
+            var image = $('<img class="card__img" />').attr('src', item.poster || './img/img_broken.svg')
             var title = item.title + (item.year ? ' (' + item.year + ')' : '')
-            var meta = [item.quality, item.codec, item.size, 'сиды: ' + item.seeds].filter(Boolean).join(' · ')
-            var el = $('<div class="selector lampa-kinozal-proto__card"></div>')
-            if (item.poster) el.append($('<img class="lampa-kinozal-proto__poster" />').attr('src', item.poster))
-            var body = $('<div class="lampa-kinozal-proto__card-body"></div>')
-            body.append($('<div class="lampa-kinozal-proto__title"></div>').text(title))
-            if (item.original_title) body.append($('<div class="lampa-kinozal-proto__meta"></div>').text(item.original_title))
-            if (meta) body.append($('<div class="lampa-kinozal-proto__meta"></div>').text(meta))
-            el.append(body)
+            view.append(image)
+            el.append(view)
+            el.append($('<div class="card__title"></div>').text(title))
+            if (item.year) el.append($('<div class="card__age"></div>').text(item.year))
+            if (item.quality) view.append($('<div class="card__quality"><div></div></div>').find('div').text(item.quality).parent())
+            if (item.type === 'series') el.addClass('card--tv')
+            el.on('hover:focus', function () { scroll.update(el, true) })
             el.on('hover:enter', function () {
                 Lampa.Activity.push({ url: '', title: item.title, component: 'lampa_kinozal_detail', item: item, page: 1 })
             })
@@ -267,9 +269,11 @@
             })
             scroll.append(categoryButton)
             if (!data.results.length) scroll.append($('<div class="lampa-kinozal-proto__hint"></div>').text('Ничего не найдено'))
-            data.results.forEach(function (item) { scroll.append(cardElement(item)) })
+            var cards = $('<div class="lampa-kinozal-proto__cards"></div>')
+            data.results.forEach(function (item) { cards.append(cardElement(item)) })
+            if (data.results.length) scroll.append(cards)
             if (data.page < data.total_pages) {
-                var next = $('<div class="selector lampa-kinozal-proto__card"></div>').text('Следующая страница')
+                var next = $('<div class="selector lampa-kinozal-proto__card-action"></div>').text('Следующая страница')
                 next.on('hover:enter', function () { load(data.page + 1) })
                 scroll.append(next)
             }
@@ -313,13 +317,13 @@
         if (item.overview) root.append($('<p></p>').text(item.overview))
         root.append($('<p></p>').text(['Аудио: ' + (item.audio || '—'), 'Длительность: ' + (item.duration || '—'), 'Сиды: ' + item.seeds, 'Пиры: ' + item.peers].join('\n')))
 
-        var send = $('<div class="selector lampa-kinozal-proto__card"></div>').text('Передать в TorrServer')
+        var send = $('<div class="selector lampa-kinozal-proto__card-action"></div>').text('Передать в TorrServer')
         send.on('hover:enter', function () {
             torr.send(item, function () { notify('Раздача передана') }, function (message) { notify(message, true) })
         })
         actions.append(send)
 
-        var copy = $('<div class="selector lampa-kinozal-proto__card"></div>').text('Показать magnet')
+        var copy = $('<div class="selector lampa-kinozal-proto__card-action"></div>').text('Показать magnet')
         copy.on('hover:enter', function () {
             if (!item.magnet) return notify('У карточки нет magnet', true)
             Lampa.Modal.open({
