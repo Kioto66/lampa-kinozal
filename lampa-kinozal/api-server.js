@@ -2,8 +2,9 @@
  * Dependency-free local API for the LAMPA Kinozal prototype.
  *
  * By default this serves the checked-in mock dataset. Set
- * LAMPA_API_SOURCE=public to read the public Kinozal top pages. Authenticated
- * torrent delivery is intentionally not implemented here yet.
+ * LAMPA_API_SOURCE=browser to read public Kinozal top pages through a
+ * dedicated persistent Chrome profile. Authenticated torrent delivery is
+ * intentionally not implemented here yet.
  */
 
 'use strict'
@@ -19,6 +20,9 @@ const PORT = Number(process.env.LAMPA_API_PORT || 8787)
 const DATA_FILE = process.env.LAMPA_API_DATA || path.join(__dirname, 'mock-results.json')
 const SOURCE = process.env.LAMPA_API_SOURCE || 'mock'
 const KINOZAL_BASE = (process.env.KINOZAL_BASE_URL || 'https://kinozal.me').replace(/\/$/, '')
+const CHROME_PATH = process.env.KINOZAL_CHROME_PATH || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
+const BROWSER_PROFILE = process.env.KINOZAL_PROFILE_DIR || path.join(__dirname, '.kinozal-browser-profile')
+const BROWSER_HEADLESS = String(process.env.KINOZAL_HEADLESS || 'false').toLowerCase() === 'true'
 const MAGNET_RE = /^magnet:\?xt=urn:btih:[a-z0-9]{6,}(?:&[^\s]*)?$/i
 
 const TOP_CATEGORIES = Object.freeze({
@@ -27,6 +31,9 @@ const TOP_CATEGORIES = Object.freeze({
     series_foreign: 32,
     movies: 1
 })
+
+let browserContextPromise = null
+let browserPagePromise = null
 
 function loadItems() {
     const payload = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'))
@@ -112,6 +119,83 @@ async function fetchPublicTop(category, period) {
     return { url, results: parseTopPage(html) }
 }
 
+async function getBrowserPage() {
+    if (!browserContextPromise) {
+        browserContextPromise = (async () => {
+            let playwright
+            try {
+                playwright = require('playwright-core')
+            } catch (error) {
+                throw new Error('Установите playwright-core: npm install playwright-core')
+            }
+            const context = await playwright.chromium.launchPersistentContext(BROWSER_PROFILE, {
+                executablePath: CHROME_PATH,
+                headless: BROWSER_HEADLESS,
+                viewport: { width: 1440, height: 1000 },
+                locale: 'ru-RU',
+                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36'
+            })
+            context.on('close', () => { browserContextPromise = null; browserPagePromise = null })
+            return context
+        })()
+    }
+    const context = await browserContextPromise
+    if (!browserPagePromise) {
+        browserPagePromise = (async () => {
+            const pages = context.pages()
+            return pages[0] || context.newPage()
+        })()
+    }
+    return browserPagePromise
+}
+
+async function fetchBrowserTop(category, period) {
+    const categoryCode = TOP_CATEGORIES[category] || TOP_CATEGORIES.movies
+    const periodCode = period === 'month' ? 2 : 1
+    const url = `${KINOZAL_BASE}/top.php?t=0&d=0&f=0&c=${categoryCode}&k=0&j=&s=0&w=${periodCode}`
+    const page = await getBrowserPage()
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 })
+    await page.waitForSelector('.stable a[href*="/details.php?id="]', { timeout: 60000 })
+    const results = await page.evaluate((base) => {
+        function absolute(value) {
+            try { return new URL(value, base).toString() } catch (error) { return '' }
+        }
+        function parseTitle(title) {
+            const parts = title.split(/\s*\/\s*/).map(item => item.trim()).filter(Boolean)
+            const year = title.match(/\b(19\d{2}|20\d{2})\b/)
+            const quality = (title.match(/(?:2160p|1080p|720p|4K|Blu-Ray|WEB-DL|WEB-DLRip|BDRip|HDTVRip|HDR|HEVC|Lossless)/i) || [])[0] || ''
+            return {
+                title: parts[0] || title,
+                original_title: parts[1] && !/^\d{4}/.test(parts[1]) ? parts[1] : '',
+                year: year ? Number(year[1]) : '',
+                quality
+            }
+        }
+        const seen = new Set()
+        return Array.from(document.querySelectorAll('.stable a[href*="/details.php?id="]')).map(anchor => {
+            const match = (anchor.getAttribute('href') || '').match(/[?&]id=(\d+)/)
+            const image = anchor.querySelector('img')
+            const rawTitle = (anchor.getAttribute('title') || anchor.textContent || '').replace(/\s+/g, ' ').trim()
+            if (!match || seen.has(match[1])) return null
+            seen.add(match[1])
+            const parsed = parseTitle(rawTitle)
+            return {
+                id: `kinozal-${match[1]}`,
+                kinozal_id: Number(match[1]),
+                title: parsed.title,
+                original_title: parsed.original_title,
+                year: parsed.year,
+                type: /сезон|серии|сериал/i.test(rawTitle) ? 'series' : 'movie',
+                quality: parsed.quality,
+                poster: absolute(image && image.getAttribute('src')), 
+                source_url: absolute(anchor.getAttribute('href')),
+                magnet: ''
+            }
+        }).filter(Boolean)
+    }, KINOZAL_BASE)
+    return { url, results }
+}
+
 function sendJson(res, status, payload) {
     const body = Buffer.from(JSON.stringify(payload), 'utf8')
     res.writeHead(status, {
@@ -156,13 +240,19 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`)
 
     if (req.method === 'GET' && url.pathname === '/health') {
-        return sendJson(res, 200, { ok: true, service: 'lampa-kinozal-dev', mode: SOURCE })
+        return sendJson(res, 200, { ok: true, service: 'lampa-kinozal-dev', mode: SOURCE, browser_profile: SOURCE === 'browser' ? BROWSER_PROFILE : '' })
     }
 
     if (req.method === 'GET' && url.pathname === '/v1/search') {
         try {
             const page = Math.max(1, Number(url.searchParams.get('page') || 1) || 1)
             const limit = Math.min(50, Math.max(1, Number(url.searchParams.get('limit') || 10) || 10))
+            if (SOURCE === 'browser') {
+                const category = String(url.searchParams.get('category') || 'movies')
+                const period = String(url.searchParams.get('period') || 'week')
+                const payload = await fetchBrowserTop(category, period)
+                return sendJson(res, 200, pageOf(payload.results, page, limit))
+            }
             if (SOURCE === 'public') {
                 const category = String(url.searchParams.get('category') || 'movies')
                 const period = String(url.searchParams.get('period') || 'week')
@@ -203,4 +293,14 @@ server.listen(PORT, HOST, () => {
     console.log('GET  /health')
     console.log('GET  /v1/search?q=dune&page=1&limit=10')
     console.log('POST /v1/torrents  (dry-run)')
+    if (SOURCE === 'browser') console.log(`Browser profile: ${BROWSER_PROFILE}`)
+})
+
+process.on('SIGINT', async () => {
+    try {
+        const context = browserContextPromise && await browserContextPromise
+        if (context) await context.close()
+    } finally {
+        server.close(() => process.exit(0))
+    }
 })
