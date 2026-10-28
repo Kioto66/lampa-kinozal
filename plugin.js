@@ -446,6 +446,7 @@
 
         content.append($('<h2></h2>').text(item.title))
         if (item.original_title) content.append($('<p style="opacity:.7"></p>').text(item.original_title))
+        if (item.poster) content.append($('<img style="float:left;margin:0 1.2em 1em 0;width:11em;border-radius:.4em" />').attr('src', item.poster))
         content.append($('<p></p>').text([item.year, item.quality, item.codec, item.size].filter(Boolean).join(' · ')))
         if (item.overview) content.append($('<p style="opacity:.85;line-height:1.45"></p>').text(item.overview))
         content.append($('<p style="opacity:.85"></p>').text([
@@ -455,7 +456,7 @@
             'Пиры: ' + item.peers
         ].join(' · ')))
 
-        var actions = $('<div style="margin-top:1em"></div>')
+        var actions = $('<div style="margin-top:1em;clear:both"></div>')
 
         function action(name, callback) {
             var el = $('<div class="selector" style="display:block;min-height:3.2em;padding:.65em .8em;margin:.45em 0;background:rgba(255,255,255,.06);border-radius:.35em"></div>').text(name)
