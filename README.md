@@ -50,7 +50,7 @@ $env:LAMPA_API_SOURCE = 'browser'
 node .\api-server.js
 ```
 
-Откроется отдельный Chrome-профиль `.kinozal-browser-profile`. При первом запуске
+Используется единственный профиль `.kinozal-manual-profile` (запускается `kinozal-start.cmd` свёрнутым). При первом запуске
 выполните проверку Cloudflare в этом окне вручную. Профиль отдельный: личный
 профиль Chrome не используется, а cookies не попадают в репозиторий.
 

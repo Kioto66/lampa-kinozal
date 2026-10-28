@@ -176,12 +176,45 @@ async function getBrowserPage() {
     return browserPagePromise
 }
 
+async function passCloudflare(page) {
+    // Детект: заголовок «Один момент…» или iframe Turnstile
+    async function challenged() {
+        return page.evaluate(() =>
+            /Один момент|Just a moment/i.test(document.title) ||
+            !!document.querySelector('iframe[src*="challenges.cloudflare.com"]')
+        ).catch(() => true)
+    }
+
+    if (!await challenged()) return true
+
+    // Пытаемся кликнуть галочку Turnstile самостоятельно (не гарантированно:
+    // Turnstile сопротивляется автоматизации). До 4 попыток с паузой.
+    for (let attempt = 0; attempt < 4; attempt++) {
+        try {
+            const frame = page.frames().find(f => /challenges\.cloudflare\.com/.test(f.url()))
+            if (frame) {
+                const box = await frame.locator('input[type="checkbox"], .ctp-checkbox-label, label').first().boundingBox().catch(() => null)
+                if (box) await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
+            }
+        } catch (error) { /* попробуем ещё раз после паузы */ }
+        await page.waitForTimeout(3000)
+        if (!await challenged()) return true
+    }
+
+    return false
+}
+
 async function loadBrowserTop(category, period) {
     const categoryCode = TOP_CATEGORIES[category] || TOP_CATEGORIES.movies
     const periodCode = period === 'month' ? 2 : 1
     const url = `${KINOZAL_BASE}/top.php?t=${categoryCode}&d=0&f=0&c=0&k=0&j=&s=0&w=${periodCode}`
     const page = await getBrowserPage()
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 })
+
+    if (!await passCloudflare(page)) {
+        throw new Error('Кинозал показывает проверку Cloudflare — открой окно проекта Chrome (свернуто в панели задач) и кликни галочку вручную')
+    }
+
     await page.waitForSelector('.stable a[href*="/details.php?id="]', { timeout: 60000 })
     const results = await page.evaluate((base) => {
         function absolute(value) {

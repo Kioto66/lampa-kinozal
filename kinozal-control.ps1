@@ -36,7 +36,7 @@ if (Test-Url 'http://127.0.0.1:9222/json/version') {
         '--no-first-run', '--no-default-browser-check',
         '--window-size=1280,900',
         'https://kinozal.me/'
-    )
+    ) -WindowStyle Minimized
     $ok = $false
     foreach ($i in 1..15) {
         Start-Sleep -Seconds 1
