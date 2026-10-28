@@ -3,8 +3,9 @@
  *
  * By default this serves the checked-in mock dataset. Set
  * LAMPA_API_SOURCE=browser to read public Kinozal top pages through a
- * dedicated persistent Chrome profile. Authenticated torrent delivery is
- * intentionally not implemented here yet.
+ * dedicated browser profile. KINOZAL_CDP_URL can attach to a separately
+ * launched project Chrome window without touching the user's personal browser.
+ * Authenticated torrent delivery is intentionally not implemented here yet.
  */
 
 'use strict'
@@ -23,6 +24,9 @@ const KINOZAL_BASE = (process.env.KINOZAL_BASE_URL || 'https://kinozal.me').repl
 const CHROME_PATH = process.env.KINOZAL_CHROME_PATH || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
 const BROWSER_PROFILE = process.env.KINOZAL_PROFILE_DIR || path.join(__dirname, '.kinozal-browser-profile')
 const BROWSER_HEADLESS = String(process.env.KINOZAL_HEADLESS || 'false').toLowerCase() === 'true'
+const BROWSER_CDP_URL = process.env.KINOZAL_CDP_URL || ''
+const BROWSER_CACHE_TTL_MS = Math.max(0, Number(process.env.KINOZAL_CACHE_TTL_MS || 120000))
+const BROWSER_MIN_INTERVAL_MS = Math.max(0, Number(process.env.KINOZAL_MIN_INTERVAL_MS || 3000))
 const MAGNET_RE = /^magnet:\?xt=urn:btih:[a-z0-9]{6,}(?:&[^\s]*)?$/i
 
 const TOP_CATEGORIES = Object.freeze({
@@ -34,6 +38,10 @@ const TOP_CATEGORIES = Object.freeze({
 
 let browserContextPromise = null
 let browserPagePromise = null
+let browserConnection = null
+let browserLastRequestAt = 0
+let browserQueue = Promise.resolve()
+const browserCache = new Map()
 
 function loadItems() {
     const payload = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'))
@@ -104,7 +112,7 @@ function parseTopPage(html) {
 async function fetchPublicTop(category, period) {
     const categoryCode = TOP_CATEGORIES[category] || TOP_CATEGORIES.movies
     const periodCode = period === 'month' ? 2 : 1
-    const url = `${KINOZAL_BASE}/top.php?t=0&d=0&f=0&c=${categoryCode}&k=0&j=&s=0&w=${periodCode}`
+    const url = `${KINOZAL_BASE}/top.php?t=${categoryCode}&d=0&f=0&c=0&k=0&j=&s=0&w=${periodCode}`
     if (typeof fetch !== 'function') throw new Error('Нужен Node.js 18 или новее')
     const response = await fetch(url, {
         headers: {
@@ -128,14 +136,22 @@ async function getBrowserPage() {
             } catch (error) {
                 throw new Error('Установите playwright-core: npm install playwright-core')
             }
-            const context = await playwright.chromium.launchPersistentContext(BROWSER_PROFILE, {
-                executablePath: CHROME_PATH,
-                headless: BROWSER_HEADLESS,
-                viewport: { width: 1440, height: 1000 },
-                locale: 'ru-RU',
-                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36'
-            })
-            context.on('close', () => { browserContextPromise = null; browserPagePromise = null })
+            let context
+            if (BROWSER_CDP_URL) {
+                browserConnection = await playwright.chromium.connectOverCDP(BROWSER_CDP_URL)
+                context = browserConnection.contexts()[0]
+                if (!context) throw new Error('В отдельном Chrome не найден браузерный контекст')
+                context.on('close', () => { browserContextPromise = null; browserPagePromise = null; browserConnection = null })
+            } else {
+                context = await playwright.chromium.launchPersistentContext(BROWSER_PROFILE, {
+                    executablePath: CHROME_PATH,
+                    headless: BROWSER_HEADLESS,
+                    viewport: { width: 1440, height: 1000 },
+                    locale: 'ru-RU',
+                    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36'
+                })
+                context.on('close', () => { browserContextPromise = null; browserPagePromise = null })
+            }
             return context
         })()
     }
@@ -149,10 +165,10 @@ async function getBrowserPage() {
     return browserPagePromise
 }
 
-async function fetchBrowserTop(category, period) {
+async function loadBrowserTop(category, period) {
     const categoryCode = TOP_CATEGORIES[category] || TOP_CATEGORIES.movies
     const periodCode = period === 'month' ? 2 : 1
-    const url = `${KINOZAL_BASE}/top.php?t=0&d=0&f=0&c=${categoryCode}&k=0&j=&s=0&w=${periodCode}`
+    const url = `${KINOZAL_BASE}/top.php?t=${categoryCode}&d=0&f=0&c=0&k=0&j=&s=0&w=${periodCode}`
     const page = await getBrowserPage()
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 })
     await page.waitForSelector('.stable a[href*="/details.php?id="]', { timeout: 60000 })
@@ -194,6 +210,29 @@ async function fetchBrowserTop(category, period) {
         }).filter(Boolean)
     }, KINOZAL_BASE)
     return { url, results }
+}
+
+function wait(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+async function fetchBrowserTop(category, period) {
+    const key = `${category}:${period}`
+    const cached = browserCache.get(key)
+    if (cached && Date.now() - cached.at < BROWSER_CACHE_TTL_MS) return cached.payload
+
+    const run = browserQueue.then(async () => {
+        const fresh = browserCache.get(key)
+        if (fresh && Date.now() - fresh.at < BROWSER_CACHE_TTL_MS) return fresh.payload
+        const waitFor = BROWSER_MIN_INTERVAL_MS - (Date.now() - browserLastRequestAt)
+        if (waitFor > 0) await wait(waitFor)
+        const payload = await loadBrowserTop(category, period)
+        browserLastRequestAt = Date.now()
+        browserCache.set(key, { at: browserLastRequestAt, payload })
+        return payload
+    })
+    browserQueue = run.catch(() => {})
+    return run
 }
 
 function sendJson(res, status, payload) {
@@ -240,7 +279,12 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`)
 
     if (req.method === 'GET' && url.pathname === '/health') {
-        return sendJson(res, 200, { ok: true, service: 'lampa-kinozal-dev', mode: SOURCE, browser_profile: SOURCE === 'browser' ? BROWSER_PROFILE : '' })
+        return sendJson(res, 200, {
+            ok: true,
+            service: 'lampa-kinozal-dev',
+            mode: SOURCE,
+            browser_profile: SOURCE === 'browser' ? (BROWSER_CDP_URL ? 'separate-project-chrome' : BROWSER_PROFILE) : ''
+        })
     }
 
     if (req.method === 'GET' && url.pathname === '/v1/search') {
@@ -293,13 +337,15 @@ server.listen(PORT, HOST, () => {
     console.log('GET  /health')
     console.log('GET  /v1/search?q=dune&page=1&limit=10')
     console.log('POST /v1/torrents  (dry-run)')
-    if (SOURCE === 'browser') console.log(`Browser profile: ${BROWSER_PROFILE}`)
+    if (SOURCE === 'browser' && !BROWSER_CDP_URL) console.log(`Browser profile: ${BROWSER_PROFILE}`)
+    if (SOURCE === 'browser' && BROWSER_CDP_URL) console.log(`Attached project Chrome: ${BROWSER_CDP_URL}`)
 })
 
 process.on('SIGINT', async () => {
     try {
         const context = browserContextPromise && await browserContextPromise
-        if (context) await context.close()
+        if (context && !BROWSER_CDP_URL) await context.close()
+        if (browserConnection) await browserConnection.close().catch(() => {})
     } finally {
         server.close(() => process.exit(0))
     }

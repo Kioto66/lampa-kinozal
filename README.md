@@ -54,6 +54,23 @@ node .\api-server.js
 выполните проверку Cloudflare в этом окне вручную. Профиль отдельный: личный
 профиль Chrome не используется, а cookies не попадают в репозиторий.
 
+Если автоматизированное окно зацикливает проверку Cloudflare, используйте
+отдельное обычное окно Chrome проекта. Личный профиль Chrome к нему не имеет
+отношения:
+
+```powershell
+$profile = "$PWD\\.kinozal-manual-profile"
+Start-Process 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe' -ArgumentList @('--remote-debugging-port=9222', "--user-data-dir=$profile", '--new-window', 'https://kinozal.me/top.php')
+$env:KINOZAL_CDP_URL = 'http://127.0.0.1:9222'
+$env:LAMPA_API_SOURCE = 'browser'
+node .\\api-server.js
+```
+
+Проверку Cloudflare и вход в этом отдельном профиле выполняет пользователь
+вручную. Сервер только читает открытую страницу после этого; личный браузер
+и его профиль не используются. Повторные запросы к одному разделу кэшируются
+на 2 минуты, а разные запросы идут последовательно с паузой не менее 3 секунд.
+
 После запуска укажите в настройках плагина адрес компьютера в домашней сети, например:
 
 ```text

@@ -212,7 +212,8 @@
 
     function ListScreen(object) {
         var root = $('<div class="lampa-kinozal-proto"></div>')
-        var scroll = new Lampa.Scroll({ mask: true, over: true })
+        var main = null
+        var fallbackScroll = null
         var provider = field('mode', 'mock') === 'proxy' ? new ProxyProvider(field('proxy_url', '') || DEFAULT_PROXY_URL) : new MockProvider()
         var query = String(object.query || '')
         var category = String(object.category || field('category', 'movies'))
@@ -231,15 +232,14 @@
             if (item.year) el.append($('<div class="card__age"></div>').text(item.year))
             if (item.quality) view.append($('<div class="card__quality"><div></div></div>').find('div').text(item.quality).parent())
             if (item.type === 'series') el.addClass('card--tv')
-            el.on('hover:focus', function () { scroll.update(el, true) })
+            el.on('hover:focus', function () { if (fallbackScroll) fallbackScroll.update(el, true) })
             el.on('hover:enter', function () {
                 Lampa.Activity.push({ url: '', title: item.title, component: 'lampa_kinozal_detail', item: item, page: 1 })
             })
             return el
         }
 
-        function render(data) {
-            scroll.clear()
+        function controls(data) {
             var periodItem = TOP_PERIODS.filter(function (item) { return item.value === period })[0] || TOP_PERIODS[0]
             var categoryItem = TOP_CATEGORIES.filter(function (item) { return item.value === category })[0] || TOP_CATEGORIES[0]
             var periodButton = $('<div class="selector lampa-kinozal-proto__filter"></div>').text('Период: ' + periodItem.title)
@@ -254,7 +254,7 @@
                     onBack: function () { Lampa.Select.close(); Lampa.Controller.toggle('content') }
                 })
             })
-            scroll.append(periodButton)
+            root.append(periodButton)
             var categoryButton = $('<div class="selector lampa-kinozal-proto__filter"></div>').text('Раздел: ' + categoryItem.title)
             categoryButton.on('hover:enter', function () {
                 Lampa.Select.show({
@@ -267,16 +267,69 @@
                     onBack: function () { Lampa.Select.close(); Lampa.Controller.toggle('content') }
                 })
             })
-            scroll.append(categoryButton)
-            if (!data.results.length) scroll.append($('<div class="lampa-kinozal-proto__hint"></div>').text('Ничего не найдено'))
+            root.append(categoryButton)
+        }
+
+        function standardCard(item) {
+            var card = $.extend({}, item)
+            card.poster_path = card.poster_path || card.poster || card.img || ''
+            card.img = card.img || card.poster || card.poster_path || ''
+            card.source = card.source || 'kinozal'
+            card.params = card.params || {}
+            return card
+        }
+
+        function renderStandard(data) {
+            if (!Lampa.Maker || !Lampa.Maker.make) return false
+            if (main && main.destroy) main.destroy()
+            var periodItem = TOP_PERIODS.filter(function (item) { return item.value === period })[0] || TOP_PERIODS[0]
+            var categoryItem = TOP_CATEGORIES.filter(function (item) { return item.value === category })[0] || TOP_CATEGORIES[0]
+            var line = {
+                title: 'Топ раздач · ' + periodItem.title + ' · ' + categoryItem.title,
+                results: data.results.map(standardCard),
+                params: { items: { view: 7, mapping: 'line' } }
+            }
+            if (!data.results.length) line.results = [{ title: 'Ничего не найдено', params: { module: Lampa.Maker.module('Card').only('Create') } }]
+            main = Lampa.Maker.make('Main', { title: 'Топ раздач', results: [] }, function (module) {
+                return module.toggle(module.MASK.base, 'Callback')
+            })
+            main.use({
+                onInstance: function (lineInstance) {
+                    lineInstance.use({
+                        onInstance: function (cardInstance, item) {
+                            cardInstance.use({
+                                onlyEnter: function () {
+                                    Lampa.Activity.push({ url: '', title: item.title, component: 'lampa_kinozal_detail', item: item, page: 1 })
+                                }
+                            })
+                        }
+                    })
+                }
+            })
+            root.append(main.render())
+            main.build([line])
+            return true
+        }
+
+        function renderFallback(data) {
+            fallbackScroll = new Lampa.Scroll({ mask: true, over: true })
             var cards = $('<div class="lampa-kinozal-proto__cards"></div>')
             data.results.forEach(function (item) { cards.append(cardElement(item)) })
-            if (data.results.length) scroll.append(cards)
+            if (!data.results.length) cards.append($('<div class="lampa-kinozal-proto__hint"></div>').text('Ничего не найдено'))
+            fallbackScroll.append(cards)
             if (data.page < data.total_pages) {
                 var next = $('<div class="selector lampa-kinozal-proto__card-action"></div>').text('Следующая страница')
                 next.on('hover:enter', function () { load(data.page + 1) })
-                scroll.append(next)
+                fallbackScroll.append(next)
             }
+            root.append(fallbackScroll.render())
+        }
+
+        function render(data) {
+            root.find('.lampa-kinozal-proto__filter').remove()
+            root.find('.lampa-kinozal-proto__cards, .lampa-kinozal-proto__hint').remove()
+            controls(data)
+            if (!renderStandard(data)) renderFallback(data)
         }
 
         function load(requestedPage) {
@@ -295,12 +348,11 @@
 
         this.create = function () {
             addStyle()
-            root.append(scroll.render())
             load.call(this, page)
             return root
         }
         this.render = function () { return root }
-        this.destroy = function () { provider.clear(); scroll.destroy(); root.remove() }
+        this.destroy = function () { provider.clear(); if (main && main.destroy) main.destroy(); if (fallbackScroll && fallbackScroll.destroy) fallbackScroll.destroy(); root.remove() }
         this.start = function () {}
         this.stop = function () {}
     }
