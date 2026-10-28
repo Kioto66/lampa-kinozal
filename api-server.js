@@ -295,6 +295,130 @@ function sendJson(res, status, payload) {
     res.end(body)
 }
 
+/*
+ * NM (NNM-Club) — витрины новинок через portal.php?c=<id>, анонимно,
+ * без браузера. Постеры идут через общий /img прокси.
+ * Раздел = одна или несколько категорий портала (карточки сливаются).
+ */
+const NM_BASE = (process.env.NNM_BASE_URL || 'https://nnmclub.to').replace(/\/$/, '')
+const NM_SECTIONS = Object.freeze({
+    movies_new: [10],
+    movies_foreign: [6, 11],
+    series_ru: [4],
+    series_foreign: [3],
+    doc: [22, 23],
+    theater: [21]
+})
+const NM_CACHE_TTL_MS = Math.max(0, Number(process.env.NNM_CACHE_TTL_MS || 300000))
+const nmCache = new Map()
+
+function nmDecodeHtml(s) {
+    return String(s || '')
+        .replace(/&#(\d+);/g, (_, c) => String.fromCodePoint(+c))
+        .replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ')
+}
+
+function nmParsePortal(html) {
+    const cards = []
+    const seen = new Set()
+    for (const chunk of html.split(/<table[^>]*class="pline"/g).slice(1)) {
+        if (!/portalImg|portbody/.test(chunk)) continue
+        const head = chunk.match(/viewtopic\.php\?t=(\d+)"[^>]*title="([^"]{5,200})"/)
+        if (!head) continue
+        const id = +head[1]
+        if (seen.has(id)) continue
+        seen.add(id)
+        cards.push({
+            id,
+            title: nmDecodeHtml(head[2]).replace(/\s+/g, ' ').trim(),
+            poster: ((chunk.match(/<var\s+class="portalImg"[^>]*title="([^"]+)"/i) || [])[1] || '').replace(/&amp;/g, '&'),
+            magnet: (chunk.match(/magnet:\?xt=urn:btih:[A-Za-z0-9]{32,}/i) || [])[0] || '',
+            date: ((chunk.match(/\|\s*(\d{1,2}\s+[А-Яа-яЁё]{3}\s+\d{4}[^<|]*)/) || [])[1] || '').trim(),
+            desc: nmDecodeHtml(((chunk.match(/<span class="portbody">([\s\S]{0,4000}?)<\/span>/) || [])[1] || ''))
+                .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 700)
+        })
+    }
+    return cards
+}
+
+// Ключ дедупликации: название без качества/перевода/сезонов + год
+function nmBaseKey(title) {
+    let s = String(title).split('[')[0]
+    const year = (s.match(/\b(19\d{2}|20\d{2})\b/) || [])[0] || ''
+    s = s.split('(')[0]
+    s = s.toLowerCase().replace(/ё/g, 'е').replace(/[^\wа-яa-z ]+/gi, ' ').replace(/\s+/g, ' ').trim()
+    return s + '|' + year
+}
+
+function nmQuality(title) {
+    if (/2160p|UHD|4K/i.test(title)) return 3
+    if (/1080p|FHD/i.test(title)) return 2
+    if (/720p|HD/i.test(title)) return 1
+    return 0
+}
+
+function nmIsSeries(title) {
+    return /сезон|серии\s+из|сериал/i.test(title)
+}
+
+async function nmLoadSection(sectionId, days) {
+    const results = []
+    const seenIds = new Set()
+    const byKey = new Map()
+    for (const categoryId of days) {
+        const url = `${NM_BASE}/forum/portal.php?c=${categoryId}`
+        let html
+        try {
+            const response = await fetch(url, {
+                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131', 'Accept-Language': 'ru-RU,ru;q=0.9' },
+                signal: AbortSignal.timeout(25000)
+            })
+            if (!response.ok) continue
+            html = new TextDecoder('windows-1251').decode(Buffer.from(await response.arrayBuffer()))
+        } catch (error) { continue }
+        for (const card of nmParsePortal(html)) {
+            if (seenIds.has(card.id)) continue
+            seenIds.add(card.id)
+            if (card.title.length < 8) continue
+            const key = nmBaseKey(card.title)
+            const item = {
+                id: 'nm-' + card.id,
+                nm_id: card.id,
+                title: card.title,
+                year: ((card.title.match(/\b(19\d{2}|20\d{2})\b/) || [])[0]) || '',
+                type: nmIsSeries(card.title) ? 'series' : 'movie',
+                poster: card.poster,
+                overview: card.desc,
+                magnet: card.magnet,
+                source_url: `${NM_BASE}/forum/viewtopic.php?t=${card.id}`,
+                published_at: card.date,
+                _key: key,
+                _q: nmQuality(card.title)
+            }
+            const prev = byKey.get(key)
+            if (prev) {
+                if (item._q > prev._q) {
+                    results.splice(results.indexOf(prev), 1, item)
+                    byKey.set(key, item)
+                }
+            } else {
+                results.push(item)
+                byKey.set(key, item)
+            }
+        }
+    }
+    return results
+}
+
+async function nmSection(section, categoryIds) {
+    const key = section
+    const cached = nmCache.get(key)
+    if (cached && Date.now() - cached.at < NM_CACHE_TTL_MS) return cached.payload
+    const payload = await nmLoadSection(section, categoryIds)
+    nmCache.set(key, { at: Date.now(), payload })
+    return payload
+}
+
 function pageOf(items, page, limit) {
     const totalPages = Math.max(1, Math.ceil(items.length / limit))
     const start = (page - 1) * limit
@@ -313,9 +437,12 @@ function proxyImageUrl(host, value) {
 }
 
 function proxyPosters(host, payload) {
+    // Не мутируем элементы: payload может быть из кэша, повторное
+    // проксирование дало бы двойную обёртку /img?url=.
     payload.results = payload.results.map(item => {
-        if (item.poster) item.poster = proxyImageUrl(host, item.poster)
-        return item
+        const copy = Object.assign({}, item)
+        if (copy.poster) copy.poster = proxyImageUrl(host, copy.poster)
+        return copy
     })
     return payload
 }
@@ -465,12 +592,26 @@ const server = http.createServer(async (req, res) => {
         }
     }
 
+    if (req.method === 'GET' && url.pathname === '/nm/v1/list') {
+        const section = String(url.searchParams.get('section') || 'movies_new')
+        if (!NM_SECTIONS[section]) return sendJson(res, 400, { ok: false, message: 'Неизвестный раздел NM' })
+        const limit = Math.min(80, Math.max(10, Number(url.searchParams.get('limit') || 60) || 60))
+        const page = Math.max(1, Number(url.searchParams.get('page') || 1) || 1)
+        try {
+            const items = await nmSection(section, NM_SECTIONS[section])
+            return sendJson(res, 200, proxyPosters(req.headers.host, pageOf(items, page, limit)))
+        } catch (error) {
+            return sendJson(res, 502, { ok: false, message: error.message || 'Не удалось получить витрину NNM-Club' })
+        }
+    }
+
     if (req.method === 'GET' && url.pathname === '/img') {
         return handleImage(res, url.searchParams.get('url'))
     }
 
-    if (req.method === 'GET' && (url.pathname === '/plugin.js' || url.pathname === '/mock-results.json')) {
-        const file = path.join(__dirname, url.pathname === '/plugin.js' ? 'plugin.js' : 'mock-results.json')
+    if (req.method === 'GET' && (url.pathname === '/plugin.js' || url.pathname === '/nm.js' || url.pathname === '/mock-results.json')) {
+        const fileMap = { '/plugin.js': 'plugin.js', '/nm.js': 'nm.js', '/mock-results.json': 'mock-results.json' }
+        const file = path.join(__dirname, fileMap[url.pathname])
         try {
             const body = fs.readFileSync(file)
             res.writeHead(200, {
