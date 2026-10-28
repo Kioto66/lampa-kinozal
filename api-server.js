@@ -133,7 +133,9 @@ async function fetchPublicTop(category, period) {
     if (!response.ok) throw new Error(`Kinozal HTTP ${response.status}`)
     const bytes = Buffer.from(await response.arrayBuffer())
     const html = new TextDecoder('windows-1251').decode(bytes)
-    return { url, results: parseTopPage(html) }
+    const parsed = parseTopPage(html)
+    if (category.indexOf('series') === 0) parsed.forEach(item => { item.type = 'series' })
+    return { url, results: parsed }
 }
 
 async function getBrowserPage() {
@@ -218,6 +220,10 @@ async function loadBrowserTop(category, period) {
             }
         }).filter(Boolean)
     }, KINOZAL_BASE)
+
+    // В сериальных разделах Кинозала тип определяем по разделу, а не по названию.
+    if (category.indexOf('series') === 0) results.forEach(item => { item.type = 'series' })
+
     return { url, results }
 }
 

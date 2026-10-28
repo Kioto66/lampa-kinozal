@@ -191,14 +191,67 @@
         })
     }
 
+    /*
+     * Ищем раздачу в TMDB руками самой LAMPA (её собственный ключ) и
+     * открываем штатный экран карточки. Если не нашли — наш экран деталей.
+     */
+    function openCard(item) {
+        var native = field('native_cards', 'on') === 'on'
+        var canNative = native && Lampa.Api && typeof Lampa.Api.search === 'function' && Lampa.Router && Lampa.Router.call
+
+        if (!canNative) return openFallbackDetail(item)
+
+        var queries = []
+        if (item.original_title) queries.push(item.original_title)
+        if (item.title && item.title !== item.original_title) queries.push(item.title)
+
+        function trySearch(index) {
+            if (index >= queries.length) return openFallbackDetail(item)
+
+            Lampa.Api.search({ query: queries[index], page: 1 }, function (groups) {
+                var wantType = item.type === 'series' ? 'tv' : 'movie'
+                var pool = []
+                ;(groups || []).forEach(function (group) {
+                    if (group && group.type === wantType && Array.isArray(group.results)) pool = pool.concat(group.results)
+                })
+                if (!pool.length) {
+                    ;(groups || []).forEach(function (group) {
+                        if (group && group.type !== 'person' && Array.isArray(group.results)) pool = pool.concat(group.results)
+                    })
+                }
+                if (!pool.length) return trySearch(index + 1)
+
+                var best = null
+                if (item.year) {
+                    pool.some(function (result) {
+                        var date = result.release_date || result.first_air_date || ''
+                        if (String(date).slice(0, 4) === String(item.year)) { best = result; return true }
+                        return false
+                    })
+                }
+                if (!best) best = pool[0]
+
+                best.source = 'tmdb'
+                best.kinozal_item = item
+                Lampa.Router.call('full', best)
+            }, function () {
+                trySearch(index + 1)
+            })
+        }
+
+        trySearch(0)
+    }
+
+    function openFallbackDetail(item) {
+        Lampa.Activity.push({ url: '', title: item.title, component: 'lampa_kinozal_detail', item: item, page: 1 })
+    }
+
     function filterChips(category, period) {
         var categoryItem = TOP_CATEGORIES.filter(function (item) { return item.value === category })[0] || TOP_CATEGORIES[0]
         var periodItem = TOP_PERIODS.filter(function (item) { return item.value === period })[0] || TOP_PERIODS[0]
-        var chips = $('<div style="display:flex;gap:.8em;padding:0 1em 1em"></div>')
+        var chips = $('<div style="display:flex;gap:.5em;padding:0 1em 1em"></div>')
 
-        var chipStyle = { 'padding': '.7em 1.2em', 'background': 'rgba(255,255,255,.1)', 'border-radius': '.3em', 'color': '#fff' }
-
-        var categoryButton = $('<div class="selector"></div>').css(chipStyle).text('Раздел: ' + categoryItem.title)
+        var categoryButton = $('<div class="simple-button selector"></div>').text('Раздел: ' + categoryItem.title)
         categoryButton.on('hover:enter', function () {
             selectFilter('Раздел топа', TOP_CATEGORIES, category, function (value) {
                 Lampa.Activity.push({ url: '', title: 'Кинозал', component: COMPONENT, page: 1, category: value, period: period })
@@ -206,7 +259,7 @@
         })
         chips.append(categoryButton)
 
-        var periodButton = $('<div class="selector"></div>').css(chipStyle).text('Период: ' + periodItem.title)
+        var periodButton = $('<div class="simple-button selector"></div>').text('Период: ' + periodItem.title)
         periodButton.on('hover:enter', function () {
             selectFilter('Период топа', TOP_PERIODS, period, function (value) {
                 Lampa.Activity.push({ url: '', title: 'Кинозал', component: COMPONENT, page: 1, category: category, period: value })
@@ -257,7 +310,7 @@
             onInstance: function (card, data) {
                 card.use({
                     onlyEnter: function () {
-                        Lampa.Activity.push({ url: '', title: data.title, component: 'lampa_kinozal_detail', item: data, page: 1 })
+                        openCard(data)
                     }
                 })
             }
@@ -305,13 +358,7 @@
                     active = items.indexOf(card)
                 }
                 card.onEnter = function () {
-                    Lampa.Activity.push({
-                        url: '',
-                        title: element.title,
-                        component: 'lampa_kinozal_detail',
-                        item: element,
-                        page: 1
-                    })
+                    openCard(element)
                 }
                 body.append(card.render(true))
                 items.push(card)
@@ -557,6 +604,7 @@
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'mode', type: 'select', values: { mock: 'mock', proxy: 'proxy' }, default: 'mock' }, field: { name: 'Источник данных', description: 'mock не делает сетевых запросов' } })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'proxy_url', type: 'input', values: '', default: DEFAULT_PROXY_URL }, field: { name: 'URL локального API', description: 'По умолчанию: ' + DEFAULT_PROXY_URL } })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'torr_url', type: 'input', values: '', default: '' }, field: { name: 'URL TorrServer', description: 'Добавление выполняется только по кнопке карточки' } })
+        Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'native_cards', type: 'select', values: { on: 'Открывать карточки LAMPA (TMDB)', off: 'Показывать только раздачу' }, default: 'on' }, field: { name: 'Экран карточки', description: 'TMDB-поиск выполняет сама LAMPA своим ключом' } })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'category', type: 'select', values: { movies: 'Фильмы', series: 'Сериалы общие', series_ru: 'Сериалы российские', series_foreign: 'Сериалы зарубежные' }, default: 'movies' }, field: { name: 'Раздел топа' } })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'period', type: 'select', values: { week: 'За неделю', month: 'За месяц' }, default: 'week' }, field: { name: 'Период топа' } })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'limit', type: 'select', values: { '5': '5', '10': '10', '20': '20' }, default: '10' }, field: { name: 'Результатов на странице поиска' } })
