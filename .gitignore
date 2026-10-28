@@ -1,4 +1,6 @@
 node_modules/
 .kinozal-*-profile/
-.tmp-kinozal-profile/
+kinozal-manual-profile/
 .img-cache/
+kinozal-tray.exe
+.tmp-kinozal-profile/
