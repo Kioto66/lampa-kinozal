@@ -264,28 +264,40 @@
         Lampa.Activity.push({ url: '', title: item.title, component: 'lampa_kinozal_detail', item: item, page: 1 })
     }
 
-    function filterChips(category, period) {
+    function pushScreen(category, period) {
+        Lampa.Activity.push({ url: '', title: 'Кинозал', component: COMPONENT, page: 1, category: category, period: period })
+    }
+
+    /*
+     * Меню фильтров: открывается уходом вправо за последнюю карточку.
+     * Первый уровень — что меняем, второй — выбор значения.
+     */
+    function openFilterMenu(category, period) {
         var categoryItem = TOP_CATEGORIES.filter(function (item) { return item.value === category })[0] || TOP_CATEGORIES[0]
         var periodItem = TOP_PERIODS.filter(function (item) { return item.value === period })[0] || TOP_PERIODS[0]
-        var chips = $('<div style="display:flex;gap:.5em;padding:0 1em 1em"></div>')
 
-        var categoryButton = $('<div class="simple-button selector"></div>').text('Раздел: ' + categoryItem.title)
-        categoryButton.on('hover:enter', function () {
-            selectFilter('Раздел топа', TOP_CATEGORIES, category, function (value) {
-                Lampa.Activity.push({ url: '', title: 'Кинозал', component: COMPONENT, page: 1, category: value, period: period })
-            })
+        Lampa.Select.show({
+            title: 'Кинозал',
+            items: [
+                { title: 'Раздел', subtitle: categoryItem.title },
+                { title: 'Период', subtitle: periodItem.title }
+            ],
+            onSelect: function (item) {
+                Lampa.Select.close()
+                if (item.title === 'Раздел') {
+                    selectFilter('Раздел топа', TOP_CATEGORIES, category, function (value) {
+                        pushScreen(value, period)
+                    })
+                } else {
+                    selectFilter('Период топа', TOP_PERIODS, period, function (value) {
+                        pushScreen(category, value)
+                    })
+                }
+            },
+            // Select.close() уже вызывает onBack — повторный close здесь
+            // даёт бесконечную рекурсию (Maximum call stack size exceeded).
+            onBack: function () { Lampa.Controller.toggle('content') }
         })
-        chips.append(categoryButton)
-
-        var periodButton = $('<div class="simple-button selector"></div>').text('Период: ' + periodItem.title)
-        periodButton.on('hover:enter', function () {
-            selectFilter('Период топа', TOP_PERIODS, period, function (value) {
-                Lampa.Activity.push({ url: '', title: 'Кинозал', component: COMPONENT, page: 1, category: category, period: value })
-            })
-        })
-        chips.append(periodButton)
-
-        return chips
     }
 
     /*
@@ -319,8 +331,15 @@
 
         comp.use({
             onCreate: function () {
-                try { $(this.body).append(filterChips(category, period)) } catch (e) { logError('chips', e) }
                 loadPage(number(object.page) || 1)
+            },
+            // Вправо за последнюю карточку — открываем меню фильтров.
+            onController: function (controller) {
+                controller.right = function () {
+                    if (Lampa.Navigator && Lampa.Navigator.canmove && Lampa.Navigator.canmove('right')) Lampa.Navigator.move('right')
+                    else if (window.Navigator && window.Navigator.canmove('right')) window.Navigator.move('right')
+                    else openFilterMenu(category, period)
+                }
             },
             onNext: function (resolve, reject) {
                 loadPage(number(this.object.page) || 1, resolve, reject)
@@ -421,8 +440,6 @@
 
             total_pages = data.total_pages || 1
 
-            $(html).append(filterChips(category, period))
-
             scroll.minus()
             scroll.onEnd = nextPage
             scroll.onScroll = limitView
@@ -473,6 +490,7 @@
                 },
                 right: function () {
                     if (nav().canmove('right')) nav().move('right')
+                    else openFilterMenu(category, period)
                 },
                 up: function () {
                     if (nav().canmove('up')) nav().move('up')
