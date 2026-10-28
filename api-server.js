@@ -329,6 +329,21 @@ const server = http.createServer(async (req, res) => {
         }
     }
 
+    if (req.method === 'GET' && (url.pathname === '/plugin.js' || url.pathname === '/mock-results.json')) {
+        const file = path.join(__dirname, url.pathname === '/plugin.js' ? 'plugin.js' : 'mock-results.json')
+        try {
+            const body = fs.readFileSync(file)
+            res.writeHead(200, {
+                'Content-Type': url.pathname.endsWith('.js') ? 'text/javascript; charset=utf-8' : 'application/json; charset=utf-8',
+                'Cache-Control': 'no-store',
+                'Access-Control-Allow-Origin': '*'
+            })
+            return res.end(body)
+        } catch (error) {
+            return sendJson(res, 500, { ok: false, message: 'Файл не найден' })
+        }
+    }
+
     return sendJson(res, 404, { ok: false, message: 'Неизвестный endpoint' })
 })
 

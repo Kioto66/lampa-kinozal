@@ -9,6 +9,8 @@
     // Default address of the local API on the home network. It can still be
     // changed in settings if the computer receives another LAN address.
     var DEFAULT_PROXY_URL = 'http://192.168.11.71:8787'
+    var PAGE_LIMIT = 50
+
     var TOP_CATEGORIES = [
         { value: 'movies', title: 'Фильмы' },
         { value: 'series', title: 'Сериалы общие' },
@@ -102,6 +104,7 @@
             seeds: number(item.seeds),
             peers: number(item.peers),
             published_at: String(item.published_at || ''),
+            source_url: safeHttpUrl(item.source_url || ''),
             magnet: safeMagnet(item.magnet || item.magnet_link || '')
         }
     }
@@ -151,7 +154,6 @@
         if (options.period) url += '&period=' + encodeURIComponent(options.period)
         // `silent` avoids a compatibility bug in some LAMPA builds where
         // the loading-overlay path inside `get` calls an undefined `clear`.
-        // ListScreen already controls its own loader.
         this.network.silent(url, function (response) {
             try { done(parseSearchResponse(response)) } catch (e) { fail('Локальный API вернул неверный JSON') }
         }, function (xhr, exception) {
@@ -159,6 +161,364 @@
         }.bind(this))
     }
     ProxyProvider.prototype.clear = function () { this.network.clear() }
+
+    function makeProvider() {
+        return field('mode', 'mock') === 'proxy'
+            ? new ProxyProvider(field('proxy_url', '') || DEFAULT_PROXY_URL)
+            : new MockProvider()
+    }
+
+    function makeCardData(item) {
+        var card = $.extend({}, item)
+        card.poster = card.poster || ''
+        card.img = card.img || card.poster || ''
+        card.source = card.source || 'kinozal'
+        card.params = card.params || {}
+        return card
+    }
+
+    function selectFilter(title, items, current, onPick) {
+        Lampa.Select.show({
+            title: title,
+            items: items,
+            onSelect: function (item) {
+                Lampa.Select.close()
+                onPick(item.value)
+            },
+            onBack: function () { Lampa.Select.close(); Lampa.Controller.toggle('content') }
+        })
+    }
+
+    function filterChips(category, period) {
+        var categoryItem = TOP_CATEGORIES.filter(function (item) { return item.value === category })[0] || TOP_CATEGORIES[0]
+        var periodItem = TOP_PERIODS.filter(function (item) { return item.value === period })[0] || TOP_PERIODS[0]
+        var chips = $('<div style="display:flex;gap:.8em;padding:0 1em 1em"></div>')
+
+        var chipStyle = { 'padding': '.7em 1.2em', 'background': 'rgba(255,255,255,.1)', 'border-radius': '.3em', 'color': '#fff' }
+
+        var categoryButton = $('<div class="selector"></div>').css(chipStyle).text('Раздел: ' + categoryItem.title)
+        categoryButton.on('hover:enter', function () {
+            selectFilter('Раздел топа', TOP_CATEGORIES, category, function (value) {
+                Lampa.Activity.push({ url: '', title: 'Кинозал', component: COMPONENT, page: 1, category: value, period: period })
+            })
+        })
+        chips.append(categoryButton)
+
+        var periodButton = $('<div class="selector"></div>').css(chipStyle).text('Период: ' + periodItem.title)
+        periodButton.on('hover:enter', function () {
+            selectFilter('Период топа', TOP_PERIODS, period, function (value) {
+                Lampa.Activity.push({ url: '', title: 'Кинозал', component: COMPONENT, page: 1, category: category, period: value })
+            })
+        })
+        chips.append(periodButton)
+
+        return chips
+    }
+
+    /*
+     * LAMPA 3.x: штатный экран-категория (сетка карточек, вертикальная
+     * прокрутка, пагинация при доскролле, контроллер content).
+     */
+    function MakerScreen(object) {
+        var provider = makeProvider()
+        var query = String(object.query || '')
+        var category = String(object.category || field('category', 'movies'))
+        var period = String(object.period || field('period', 'week'))
+
+        var comp = Lampa.Maker.make('Category', {
+            title: 'Кинозал',
+            page: number(object.page) || 1
+        })
+
+        function loadPage(page, resolve, reject) {
+            provider.search(query, page, PAGE_LIMIT, function (data) {
+                if (resolve) resolve(data)
+                else comp.build({
+                    results: data.results.map(makeCardData),
+                    total_pages: data.total_pages
+                })
+            }, function (message) {
+                notify(message, true)
+                if (reject) reject()
+                else comp.empty()
+            }, { category: category, period: period })
+        }
+
+        comp.use({
+            onCreate: function () {
+                try { $(this.body).append(filterChips(category, period)) } catch (e) { logError('chips', e) }
+                loadPage(number(object.page) || 1)
+            },
+            onNext: function (resolve, reject) {
+                loadPage(number(this.object.page) || 1, resolve, reject)
+            },
+            onInstance: function (card, data) {
+                card.use({
+                    onlyEnter: function () {
+                        Lampa.Activity.push({ url: '', title: data.title, component: 'lampa_kinozal_detail', item: data, page: 1 })
+                    }
+                })
+            }
+        })
+
+        return comp
+    }
+
+    /*
+     * LAMPA 2.x: классический экран категории — сетка category-full,
+     * карточки Lampa.Card, контроллер content в start().
+     */
+    function LegacyScreen(object) {
+        var provider = makeProvider()
+        var query = String(object.query || '')
+        var category = String(object.category || field('category', 'movies'))
+        var period = String(object.period || field('period', 'week'))
+        var page = number(object.page) || 1
+
+        var scroll = new Lampa.Scroll({ mask: true, over: true, step: 250, end_ratio: 2 })
+        var body = $('<div class="category-full"></div>')
+        var html = document.createElement('div')
+        var items = []
+        var total_pages = 1
+        var last = false
+        var waitload = false
+        var active = 0
+
+        function appendCards(data) {
+            data.results.forEach(function (element) {
+                var card
+                try {
+                    card = new Lampa.Card(element, { object: object })
+                } catch (e) {
+                    card = new Lampa.Card($.extend({ title: element.title }, element))
+                }
+                card.create()
+                card.onFocus = function (target) {
+                    last = target
+                    active = items.indexOf(card)
+                    scroll.update(target)
+                }
+                card.onTouch = function (target) {
+                    last = target
+                    active = items.indexOf(card)
+                }
+                card.onEnter = function () {
+                    Lampa.Activity.push({
+                        url: '',
+                        title: element.title,
+                        component: 'lampa_kinozal_detail',
+                        item: element,
+                        page: 1
+                    })
+                }
+                body.append(card.render(true))
+                items.push(card)
+            })
+        }
+
+        function nav() {
+            return (Lampa.Navigator && Lampa.Navigator.canmove) ? Lampa.Navigator : window.Navigator
+        }
+
+        function limitView() {
+            var limit_view = 12
+            var limit_collection = 36
+            var collection = items.slice(Math.max(0, active - limit_view), active + limit_view)
+
+            items.forEach(function (item) {
+                item.render(true).toggleClass('layer--render', collection.indexOf(item) >= 0)
+            })
+
+            if (nav().setCollection) {
+                nav().setCollection(items.slice(Math.max(0, active - limit_collection), active + limit_collection).map(function (c) { return c.render(true) }))
+                nav().focused(last)
+            }
+
+            if (Lampa.Layer && Lampa.Layer.visible) Lampa.Layer.visible(scroll.render(true))
+        }
+
+        function nextPage() {
+            if (waitload || page >= total_pages) return
+            waitload = true
+            page++
+            provider.search(query, page, PAGE_LIMIT, function (data) {
+                total_pages = data.total_pages || total_pages
+                appendCards(data)
+                waitload = false
+                limitView()
+            }, function () { waitload = false }, { category: category, period: period })
+        }
+
+        function build(data) {
+            if (!data.results.length) return empty()
+
+            total_pages = data.total_pages || 1
+
+            $(html).append(filterChips(category, period))
+
+            scroll.minus()
+            scroll.onEnd = nextPage
+            scroll.onScroll = limitView
+            scroll.onWheel = function (step) {
+                if (!Lampa.Controller.own(LegacyScreen_instance)) startController()
+                nav().move(step > 0 ? 'down' : 'up')
+            }
+
+            appendCards(data)
+
+            scroll.append(body)
+            $(html).append(scroll.render(true))
+
+            limitView()
+
+            this.activity.loader(false)
+            this.activity.toggle()
+        }
+
+        function empty() {
+            var hint = $('<div style="padding:2em;color:#fff;opacity:.7">Ничего не найдено. Проверьте адрес локального API в настройках плагина.</div>')
+            scroll.append(hint)
+            $(html).append(scroll.render(true))
+            this.activity.loader(false)
+            this.activity.toggle()
+        }
+
+        function load() {
+            this.activity.loader(true)
+            provider.search(query, page, PAGE_LIMIT, function (data) {
+                build.call(LegacyScreen_instance, data)
+            }, function (message) {
+                notify(message, true)
+                empty.call(LegacyScreen_instance)
+            }, { category: category, period: period })
+        }
+
+        function startController() {
+            Lampa.Controller.add('content', {
+                link: this,
+                toggle: function () {
+                    Lampa.Controller.collectionSet(scroll.render(true))
+                    Lampa.Controller.collectionFocus(last || false, scroll.render(true))
+                },
+                left: function () {
+                    if (nav().canmove('left')) nav().move('left')
+                    else Lampa.Controller.toggle('menu')
+                },
+                right: function () {
+                    if (nav().canmove('right')) nav().move('right')
+                },
+                up: function () {
+                    if (nav().canmove('up')) nav().move('up')
+                    else Lampa.Controller.toggle('head')
+                },
+                down: function () {
+                    if (nav().canmove('down')) nav().move('down')
+                },
+                back: function () { Lampa.Activity.backward() }
+            })
+
+            Lampa.Controller.toggle('content')
+        }
+
+        var LegacyScreen_instance = this
+
+        this.create = function () { load(); return this.render() }
+        this.render = function () { return $(html) }
+        this.start = startController
+        this.stop = function () {}
+        this.pause = function () {}
+        this.destroy = function () { provider.clear(); items.forEach(function (card) { if (card.destroy) card.destroy() }); scroll.destroy(); $(html).remove() }
+    }
+
+    function ListScreen(object) {
+        var hasMaker = !!(Lampa.Maker && Lampa.Maker.make && Lampa.Maker.get('Category'))
+
+        return hasMaker ? MakerScreen(object) : LegacyScreen(object)
+    }
+
+    function DetailScreen(object) {
+        var item = normalize(object.item)
+        var scroll = new Lampa.Scroll({ mask: true, over: true })
+        var last = false
+        var torr = new TorrAdapter(field('torr_url', ''))
+
+        var content = $('<div class="kinozal-detail" style="padding:2em 3em;max-width:60em;color:#fff"></div>')
+
+        content.append($('<h2></h2>').text(item.title))
+        if (item.original_title) content.append($('<p style="opacity:.7"></p>').text(item.original_title))
+        content.append($('<p></p>').text([item.year, item.quality, item.codec, item.size].filter(Boolean).join(' · ')))
+        if (item.overview) content.append($('<p style="opacity:.85;line-height:1.45"></p>').text(item.overview))
+        content.append($('<p style="opacity:.85"></p>').text([
+            'Аудио: ' + (item.audio || '—'),
+            'Длительность: ' + (item.duration || '—'),
+            'Сиды: ' + item.seeds,
+            'Пиры: ' + item.peers
+        ].join(' · ')))
+
+        var actions = $('<div style="margin-top:1em"></div>')
+
+        function action(name, callback) {
+            var el = $('<div class="selector" style="display:block;min-height:3.2em;padding:.65em .8em;margin:.45em 0;background:rgba(255,255,255,.06);border-radius:.35em"></div>').text(name)
+            el.on('hover:focus', function () { last = el })
+            el.on('hover:enter', callback)
+            actions.append(el)
+        }
+
+        action('Передать в TorrServer', function () {
+            torr.send(item, function () { notify('Раздача передана') }, function (message) { notify(message, true) })
+        })
+
+        action('Показать magnet', function () {
+            if (!item.magnet) return notify('У карточки нет magnet', true)
+            Lampa.Modal.open({
+                title: 'Magnet-ссылка',
+                html: $('<div></div>').text(item.magnet),
+                size: 'medium',
+                buttons: [{ name: 'Закрыть', onSelect: function () { Lampa.Modal.close() } }],
+                onBack: function () { Lampa.Modal.close(); Lampa.Controller.toggle('content') }
+            })
+        })
+
+        if (item.source_url) {
+            action('Открыть страницу раздачи', function () {
+                if (Lampa.Open && Lampa.Open.newWindow) Lampa.Open.newWindow(item.source_url)
+                else window.open(item.source_url, '_blank')
+            })
+        }
+
+        content.append(actions)
+        scroll.append(content)
+
+        function startController() {
+            Lampa.Controller.add('content', {
+                link: this,
+                toggle: function () {
+                    Lampa.Controller.collectionSet(scroll.render(true))
+                    Lampa.Controller.collectionFocus(last || false, scroll.render(true))
+                },
+                up: function () {
+                    if (Lampa.Navigator && Lampa.Navigator.canmove) Lampa.Navigator.move('up')
+                    else if (window.Navigator && window.Navigator.canmove) window.Navigator.move('up')
+                },
+                down: function () {
+                    if (Lampa.Navigator && Lampa.Navigator.canmove) Lampa.Navigator.move('down')
+                    else if (window.Navigator && window.Navigator.canmove) window.Navigator.move('down')
+                },
+                left: function () {},
+                right: function () {},
+                back: function () { Lampa.Activity.backward() }
+            })
+
+            Lampa.Controller.toggle('content')
+        }
+
+        this.create = function () { return this.render() }
+        this.render = function () { return scroll.render() }
+        this.start = startController
+        this.stop = function () {}
+        this.pause = function () {}
+        this.destroy = function () { torr.clear(); scroll.destroy() }
+    }
 
     function TorrAdapter(endpoint) {
         this.endpoint = safeHttpUrl(endpoint).replace(/\/$/, '')
@@ -178,224 +538,6 @@
     }
     TorrAdapter.prototype.clear = function () { this.network.clear() }
 
-    function addStyle() {
-        if (!Lampa.Template || !Lampa.Template.add) return
-        Lampa.Template.add('lampa_kinozal_proto_style', '<style>' +
-            '.lampa-kinozal-proto{padding:2em 3em;color:#fff}.lampa-kinozal-proto__hint{opacity:.65;margin:.5em 0 1.5em}.lampa-kinozal-proto__filter{padding:1em 1.2em;margin:.35em 0;background:rgba(255,255,255,.08);border-radius:.35em}.lampa-kinozal-proto__cards{display:flex;flex-wrap:wrap;align-items:flex-start;gap:1.1em;padding:1em 0 2em}.lampa-kinozal-proto__card-action{display:flex;align-items:center;min-height:5em;padding:.65em .8em;margin:.45em 0;background:rgba(255,255,255,.06);border-radius:.35em}.lampa-kinozal-proto__detail{padding:2em 3em;max-width:60em}.lampa-kinozal-proto__detail h2{margin-top:0}.lampa-kinozal-proto__detail p{opacity:.85;line-height:1.45}' +
-            '</style>')
-    }
-
-    function SearchModal(onSubmit) {
-        var input = $('<input class="input" type="text" placeholder="Например, Dune" />')
-        input.val(Lampa.Storage.get(NS + 'last_query', ''))
-        var html = $('<div></div>').append(input)
-        setTimeout(function () { input.focus() }, 100)
-        Lampa.Modal.open({
-            title: 'Поиск Kinozal',
-            html: html,
-            size: 'small',
-            buttons: [{
-                name: 'Искать',
-                onSelect: function () {
-                    var query = String(input.val() || '').trim()
-                    if (!query) return notify('Введите название', true)
-                    Lampa.Modal.close()
-                    onSubmit(query)
-                }
-            }, {
-                name: 'Отмена',
-                onSelect: function () { Lampa.Modal.close() }
-            }],
-            onBack: function () { Lampa.Modal.close(); Lampa.Controller.toggle('content') }
-        })
-    }
-
-    function ListScreen(object) {
-        var root = $('<div class="lampa-kinozal-proto"></div>')
-        var main = null
-        var fallbackScroll = null
-        var provider = field('mode', 'mock') === 'proxy' ? new ProxyProvider(field('proxy_url', '') || DEFAULT_PROXY_URL) : new MockProvider()
-        var query = String(object.query || '')
-        var category = String(object.category || field('category', 'movies'))
-        var period = String(object.period || field('period', 'week'))
-        var page = number(object.page) || 1
-        var limit = number(field('limit', 10)) || 10
-
-        function cardElement(item) {
-            var el = $('<div class="card selector layer--visible layer--render"></div>')
-            var view = $('<div class="card__view"></div>')
-            var image = $('<img class="card__img" />').attr('src', item.poster || './img/img_broken.svg')
-            var title = item.title + (item.year ? ' (' + item.year + ')' : '')
-            view.append(image)
-            el.append(view)
-            el.append($('<div class="card__title"></div>').text(title))
-            if (item.year) el.append($('<div class="card__age"></div>').text(item.year))
-            if (item.quality) view.append($('<div class="card__quality"><div></div></div>').find('div').text(item.quality).parent())
-            if (item.type === 'series') el.addClass('card--tv')
-            el.on('hover:focus', function () { if (fallbackScroll) fallbackScroll.update(el, true) })
-            el.on('hover:enter', function () {
-                Lampa.Activity.push({ url: '', title: item.title, component: 'lampa_kinozal_detail', item: item, page: 1 })
-            })
-            return el
-        }
-
-        function controls(data) {
-            var periodItem = TOP_PERIODS.filter(function (item) { return item.value === period })[0] || TOP_PERIODS[0]
-            var categoryItem = TOP_CATEGORIES.filter(function (item) { return item.value === category })[0] || TOP_CATEGORIES[0]
-            var periodButton = $('<div class="selector lampa-kinozal-proto__filter"></div>').text('Период: ' + periodItem.title)
-            periodButton.on('hover:enter', function () {
-                Lampa.Select.show({
-                    title: 'Период топа',
-                    items: TOP_PERIODS,
-                    onSelect: function (item) {
-                        Lampa.Select.close()
-                        Lampa.Activity.push({ url: '', title: 'Топ раздач', component: COMPONENT, page: 1, category: category, period: item.value })
-                    },
-                    onBack: function () { Lampa.Select.close(); Lampa.Controller.toggle('content') }
-                })
-            })
-            root.append(periodButton)
-            var categoryButton = $('<div class="selector lampa-kinozal-proto__filter"></div>').text('Раздел: ' + categoryItem.title)
-            categoryButton.on('hover:enter', function () {
-                Lampa.Select.show({
-                    title: 'Раздел топа',
-                    items: TOP_CATEGORIES,
-                    onSelect: function (item) {
-                        Lampa.Select.close()
-                        Lampa.Activity.push({ url: '', title: 'Топ раздач', component: COMPONENT, page: 1, category: item.value, period: period })
-                    },
-                    onBack: function () { Lampa.Select.close(); Lampa.Controller.toggle('content') }
-                })
-            })
-            root.append(categoryButton)
-        }
-
-        function standardCard(item) {
-            var card = $.extend({}, item)
-            card.poster_path = card.poster_path || card.poster || card.img || ''
-            card.img = card.img || card.poster || card.poster_path || ''
-            card.source = card.source || 'kinozal'
-            card.params = card.params || {}
-            return card
-        }
-
-        function renderStandard(data) {
-            if (!Lampa.Maker || !Lampa.Maker.make) return false
-            if (main && main.destroy) main.destroy()
-            var periodItem = TOP_PERIODS.filter(function (item) { return item.value === period })[0] || TOP_PERIODS[0]
-            var categoryItem = TOP_CATEGORIES.filter(function (item) { return item.value === category })[0] || TOP_CATEGORIES[0]
-            var line = {
-                title: 'Топ раздач · ' + periodItem.title + ' · ' + categoryItem.title,
-                results: data.results.map(standardCard),
-                params: { items: { view: 7, mapping: 'line' } }
-            }
-            if (!data.results.length) line.results = [{ title: 'Ничего не найдено', params: { module: Lampa.Maker.module('Card').only('Create') } }]
-            main = Lampa.Maker.make('Main', { title: 'Топ раздач', results: [] }, function (module) {
-                return module.toggle(module.MASK.base, 'Callback')
-            })
-            main.use({
-                onInstance: function (lineInstance) {
-                    lineInstance.use({
-                        onInstance: function (cardInstance, item) {
-                            cardInstance.use({
-                                onlyEnter: function () {
-                                    Lampa.Activity.push({ url: '', title: item.title, component: 'lampa_kinozal_detail', item: item, page: 1 })
-                                }
-                            })
-                        }
-                    })
-                }
-            })
-            root.append(main.render())
-            main.build([line])
-            return true
-        }
-
-        function renderFallback(data) {
-            fallbackScroll = new Lampa.Scroll({ mask: true, over: true })
-            var cards = $('<div class="lampa-kinozal-proto__cards"></div>')
-            data.results.forEach(function (item) { cards.append(cardElement(item)) })
-            if (!data.results.length) cards.append($('<div class="lampa-kinozal-proto__hint"></div>').text('Ничего не найдено'))
-            fallbackScroll.append(cards)
-            if (data.page < data.total_pages) {
-                var next = $('<div class="selector lampa-kinozal-proto__card-action"></div>').text('Следующая страница')
-                next.on('hover:enter', function () { load(data.page + 1) })
-                fallbackScroll.append(next)
-            }
-            root.append(fallbackScroll.render())
-        }
-
-        function render(data) {
-            root.find('.lampa-kinozal-proto__filter').remove()
-            root.find('.lampa-kinozal-proto__cards, .lampa-kinozal-proto__hint').remove()
-            controls(data)
-            if (!renderStandard(data)) renderFallback(data)
-        }
-
-        function load(requestedPage) {
-            page = requestedPage
-            var activity = this.activity
-            if (activity && activity.loader) activity.loader(true)
-            provider.search(query, page, limit, function (data) {
-                if (activity && activity.loader) activity.loader(false)
-                render(data)
-            }, function (message) {
-                if (activity && activity.loader) activity.loader(false)
-                notify(message, true)
-                render({ page: page, total_pages: 1, results: [] })
-            }, { category: category, period: period })
-        }
-
-        this.create = function () {
-            addStyle()
-            load.call(this, page)
-            return root
-        }
-        this.render = function () { return root }
-        this.destroy = function () { provider.clear(); if (main && main.destroy) main.destroy(); if (fallbackScroll && fallbackScroll.destroy) fallbackScroll.destroy(); root.remove() }
-        this.start = function () {}
-        this.stop = function () {}
-    }
-
-    function DetailScreen(object) {
-        var item = normalize(object.item)
-        var root = $('<div class="lampa-kinozal-proto__detail"></div>')
-        var actions = $('<div></div>')
-        var torr = new TorrAdapter(field('torr_url', ''))
-
-        root.append($('<h2></h2>').text(item.title))
-        if (item.original_title) root.append($('<p></p>').text(item.original_title))
-        root.append($('<p></p>').text([item.year, item.quality, item.codec, item.size].filter(Boolean).join(' · ')))
-        if (item.overview) root.append($('<p></p>').text(item.overview))
-        root.append($('<p></p>').text(['Аудио: ' + (item.audio || '—'), 'Длительность: ' + (item.duration || '—'), 'Сиды: ' + item.seeds, 'Пиры: ' + item.peers].join('\n')))
-
-        var send = $('<div class="selector lampa-kinozal-proto__card-action"></div>').text('Передать в TorrServer')
-        send.on('hover:enter', function () {
-            torr.send(item, function () { notify('Раздача передана') }, function (message) { notify(message, true) })
-        })
-        actions.append(send)
-
-        var copy = $('<div class="selector lampa-kinozal-proto__card-action"></div>').text('Показать magnet')
-        copy.on('hover:enter', function () {
-            if (!item.magnet) return notify('У карточки нет magnet', true)
-            Lampa.Modal.open({
-                title: 'Magnet-ссылка',
-                html: $('<div></div>').text(item.magnet),
-                size: 'medium',
-                buttons: [{ name: 'Закрыть', onSelect: function () { Lampa.Modal.close() } }],
-                onBack: function () { Lampa.Modal.close(); Lampa.Controller.toggle('content') }
-            })
-        })
-        actions.append(copy)
-        root.append(actions)
-
-        this.create = function () { return root }
-        this.render = function () { return root }
-        this.destroy = function () { torr.clear(); root.remove() }
-        this.start = function () {}
-        this.stop = function () {}
-    }
-
     function registerSettings() {
         if (!Lampa.SettingsApi || !Lampa.SettingsApi.addComponent || !Lampa.SettingsApi.addParam) return
         Lampa.SettingsApi.addComponent({ component: NS + 'settings', name: 'Кинозал — прототип', icon: '' })
@@ -412,36 +554,36 @@
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'mode', type: 'select', values: { mock: 'mock', proxy: 'proxy' }, default: 'mock' }, field: { name: 'Источник данных', description: 'mock не делает сетевых запросов' } })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'proxy_url', type: 'input', values: '', default: DEFAULT_PROXY_URL }, field: { name: 'URL локального API', description: 'По умолчанию: ' + DEFAULT_PROXY_URL } })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'torr_url', type: 'input', values: '', default: '' }, field: { name: 'URL TorrServer', description: 'Добавление выполняется только по кнопке карточки' } })
-        Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'limit', type: 'select', values: { '5': '5', '10': '10', '20': '20' }, default: '10' }, field: { name: 'Результатов на странице' } })
+        Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'category', type: 'select', values: { movies: 'Фильмы', series: 'Сериалы общие', series_ru: 'Сериалы российские', series_foreign: 'Сериалы зарубежные' }, default: 'movies' }, field: { name: 'Раздел топа' } })
+        Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'period', type: 'select', values: { week: 'За неделю', month: 'За месяц' }, default: 'week' }, field: { name: 'Период топа' } })
+        Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'limit', type: 'select', values: { '5': '5', '10': '10', '20': '20' }, default: '10' }, field: { name: 'Результатов на странице поиска' } })
     }
 
     function addMenuItem() {
         var btn = $('<li class="menu__item selector"><div class="menu__ico"></div><div class="menu__text">Кинозал</div></li>')
         btn.on('hover:enter', function () {
-        Lampa.Activity.push({ url: '', title: 'Топ раздач', component: COMPONENT, page: 1, category: 'movies', period: 'week' })
+            Lampa.Activity.push({ url: '', title: 'Кинозал', component: COMPONENT, page: 1 })
         })
         var menu = $('.menu .menu__list').eq(0)
         if (menu && menu.length) menu.append(btn)
         else if (Lampa.Menu && Lampa.Menu.addButton) {
             Lampa.Menu.addButton('', 'Кинозал', function () {
-                Lampa.Activity.push({ url: '', title: 'Топ раздач', component: COMPONENT, page: 1, category: 'movies', period: 'week' })
+                Lampa.Activity.push({ url: '', title: 'Кинозал', component: COMPONENT, page: 1 })
             })
         }
     }
 
     function init() {
-        try { addStyle() } catch (error) { logError('Не удалось добавить стили', error) }
-        try { registerSettings() } catch (error) { logError('Настройки недоступны в этой версии LAMPA', error) }
         try {
             if (Lampa.Component && Lampa.Component.add) {
                 if (!Lampa.Component.get || !Lampa.Component.get(COMPONENT)) Lampa.Component.add(COMPONENT, ListScreen)
                 if (!Lampa.Component.get || !Lampa.Component.get('lampa_kinozal_detail')) Lampa.Component.add('lampa_kinozal_detail', DetailScreen)
             }
         } catch (error) { logError('Не удалось зарегистрировать экраны', error) }
+        try { registerSettings() } catch (error) { logError('Настройки недоступны в этой версии LAMPA', error) }
         try { addMenuItem() } catch (error) { logError('Не удалось добавить пункт меню', error) }
     }
 
     if (window.appready) init()
     else Lampa.Listener.follow('app', function (event) { if (event.type === 'ready') init() })
 })()
-
