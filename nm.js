@@ -35,6 +35,10 @@
         } catch (e) { return '' }
     }
 
+    function safeMagnet(value) {
+        return /^magnet:\?xt=urn:btih:[a-z0-9]{6,}(?:&[^\s]*)?$/i.test(String(value || '')) ? String(value) : ''
+    }
+
     function number(value) {
         var parsed = Number(value)
         return isFinite(parsed) ? parsed : 0
@@ -52,7 +56,7 @@
             overview: String(item.overview || ''),
             quality: String(item.quality || ''),
             source_url: safeHttpUrl(item.source_url || ''),
-            magnet: ''
+            magnet: safeMagnet(item.magnet || '')
         }
     }
 
