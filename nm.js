@@ -384,6 +384,7 @@
         function playFile(base, hash, file, files) {
             var index = typeof file.id !== 'undefined' ? file.id : files.indexOf(file)
             var url = base + '/stream/' + encodeURIComponent(shortName(file.path)) + '?link=' + hash + '&index=' + index + '&play'
+            if (closed) return
 
             Lampa.Player.play({ title: item.title, url: url })
             Lampa.Player.callback(function () { Lampa.Controller.toggle('content') })
@@ -391,6 +392,36 @@
                 var findex = typeof f.id !== 'undefined' ? f.id : files.indexOf(f)
                 return { title: shortName(f.path), url: base + '/stream/' + encodeURIComponent(shortName(f.path)) + '?link=' + hash + '&index=' + findex + '&play' }
             }))
+        }
+
+        function getVideoFiles(base, hash, done, fail) {
+            var attempt = 0
+            var network = new Lampa.Reguest()
+            network.timeout(15000)
+
+            function extract(json) {
+                return ((json || {}).file_stats || []).filter(function (f) {
+                    return VIDEO_EXT.indexOf(String(f.path).split('.').pop().toLowerCase()) >= 0
+                })
+            }
+
+            function tick() {
+                if (closed) return
+                attempt++
+                if (attempt > 15) return fail('Раздача не загружается: нет данных от TorrServer (возможно, нет сидов)')
+                network.silent(base + '/torrents', function (json) {
+                    if (closed) return
+                    var files = extract(json)
+                    if (files.length) return done(files)
+                    notify('Раздача загружается… ' + attempt * 2 + ' c')
+                    setTimeout(tick, 2000)
+                }, function () {
+                    if (closed) return
+                    setTimeout(tick, 2000)
+                }, JSON.stringify({ action: 'get', hash: hash }))
+            }
+
+            tick()
         }
 
         function watch(magnet) {
@@ -405,30 +436,32 @@
 
             function fail(message) { notify(typeof message === 'string' ? message : 'TorrServer не принял раздачу', true) }
 
+            function openFiles(files) {
+                files.sort(naturalSort)
+                if (files.length === 1) return playFile(base, hash, files[0], files)
+
+                Lampa.Select.show({
+                    title: 'Файлы раздачи',
+                    items: files.map(function (f) { return { title: shortName(f.path), file: f } }),
+                    onSelect: function (selected) {
+                        Lampa.Select.close()
+                        playFile(base, hash, selected.file, files)
+                    },
+                    onBack: function () { Lampa.Select.close(); Lampa.Controller.toggle('content') }
+                })
+            }
+
             network.silent(base + '/torrents', function (torrent) {
                 var hash = torrent && torrent.hash
                 if (!hash) return fail()
 
-                network.silent(base + '/torrents', function (json) {
-                    var files = ((json || {}).file_stats || []).filter(function (f) {
-                        return VIDEO_EXT.indexOf(String(f.path).split('.').pop().toLowerCase()) >= 0
-                    })
-                    if (!files.length) return notify('В раздаче нет видеофайлов', true)
+                // Метаданные магнита могут догружаться несколько секунд — ждём файлы
+                var ready = ((torrent || {}).file_stats || []).filter(function (f) {
+                    return VIDEO_EXT.indexOf(String(f.path).split('.').pop().toLowerCase()) >= 0
+                })
+                if (ready.length) return openFiles(ready)
 
-                    files.sort(naturalSort)
-
-                    if (files.length === 1) return playFile(base, hash, files[0], files)
-
-                    Lampa.Select.show({
-                        title: 'Файлы раздачи',
-                        items: files.map(function (f) { return { title: shortName(f.path), file: f } }),
-                        onSelect: function (selected) {
-                            Lampa.Select.close()
-                            playFile(base, hash, selected.file, files)
-                        },
-                        onBack: function () { Lampa.Select.close(); Lampa.Controller.toggle('content') }
-                    })
-                }, fail, JSON.stringify({ action: 'get', hash: hash }))
+                getVideoFiles(base, hash, openFiles, fail)
             }, fail, JSON.stringify({
                 action: 'add',
                 link: magnet,
@@ -439,17 +472,24 @@
             }))
         }
 
-        var head = $('<h2 style="color:#fff;font-size:1.6em;margin:1em 1.5em .5em">' + escapeHtml(item.title) + '</h2>')
-        if (item.original_title) head.append('<div style="opacity:.6;font-size:.7em">' + escapeHtml(item.original_title) + '</div>')
+        var hasData = !!(object.item && (object.item.id || object.item.title))
+        var head = hasData
+            ? $('<h2 style="color:#fff;font-size:1.6em;margin:1em 1.5em .5em">' + escapeHtml(item.title) + '</h2>')
+            : $('<h2 style="color:#fff;font-size:1.6em;margin:1em 1.5em .5em">Раздача недоступна</h2>')
+        if (hasData && item.original_title) head.append('<div style="opacity:.6;font-size:.7em">' + escapeHtml(item.original_title) + '</div>')
         body.append(head)
 
-        if (item.poster) {
+        if (hasData && item.poster) {
             body.append('<div style="margin:0 1.5em"><img src="' + escapeHtml(item.poster) + '" style="width:11em;border-radius:.4em;float:left;margin-right:1.2em"></div>')
         }
 
         var meta = [item.year, item.quality].filter(Boolean).join(' · ')
-        if (meta) body.append('<p style="color:#fff;opacity:.8;margin:.5em 1.5em;clear:left">' + escapeHtml(meta) + '</p>')
-        if (item.overview) body.append('<p style="color:#fff;opacity:.85;line-height:1.45;margin:.5em 1.5em;clear:left">' + escapeHtml(item.overview) + '</p>')
+        if (hasData && meta) body.append('<p style="color:#fff;opacity:.8;margin:.5em 1.5em;clear:left">' + escapeHtml(meta) + '</p>')
+        if (hasData && item.overview) body.append('<p style="color:#fff;opacity:.85;line-height:1.45;margin:.5em 1.5em;clear:left">' + escapeHtml(item.overview) + '</p>')
+
+        if (!hasData) {
+            body.append('<p style="color:#fff;opacity:.85;margin:1em 1.5em">Данные раздачи не сохранились после перезапуска LAMPA. Нажмите влево, чтобы открыть главное меню, или вправо — чтобы выбрать раздел NM.</p>')
+        }
 
         function addButton(name, callback) {
             var btn = $('<div class="settings-param selector"><div class="settings-param-name">' + escapeHtml(name) + '</div></div>')
@@ -461,18 +501,11 @@
             body.append(btn)
         }
 
-        if (item.magnet) addButton('Смотреть (TorrServer)', function () { watch(item.magnet) })
-
-        if (item.source_url) {
-            addButton('Открыть страницу раздачи', function () {
-                if (Lampa.Open && Lampa.Open.newWindow) Lampa.Open.newWindow(item.source_url)
-                else window.open(item.source_url, '_blank')
-            })
-        }
+        if (hasData && item.magnet) addButton('Смотреть (TorrServer)', function () { watch(item.magnet) })
 
         scroll.append(body)
 
-        function startController(from) {
+        function startController() {
             try {
                 Lampa.Controller.add('content', {
                     link: this,
@@ -489,29 +522,29 @@
                         else if (window.Navigator && window.Navigator.canmove) window.Navigator.move('down')
                     },
                     left: function () { Lampa.Controller.toggle('menu') },
-                    right: function () {},
+                    right: function () { openSectionMenu(field('section', 'movies_new')) },
                     back: function () { Lampa.Activity.backward() }
                 })
                 Lampa.Controller.toggle('content')
-
-                if (from) Lampa.Noty.show('NM detail: контроллер активирован (' + from + ')')
             } catch (e) {
                 logError('startController', e)
                 Lampa.Noty.show('NM detail error: ' + e.message, true)
             }
         }
 
+        var closed = false
+
         this.create = function () {
             var result = this.render()
             // Страховка: если LAMPA не вызовет start(), контроллер всё равно зарегистрирован
-            startController.call(this, 'create')
+            startController.call(this)
             return result
         }
         this.render = function () { return scroll.render() }
-        this.start = function () { startController.call(this, 'start') }
+        this.start = function () { startController.call(this) }
         this.stop = function () {}
         this.pause = function () {}
-        this.destroy = function () { scroll.destroy() }
+        this.destroy = function () { closed = true; scroll.destroy() }
 
         function startController(from) {
             try {

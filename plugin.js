@@ -588,13 +588,6 @@
             })
         })
 
-        if (item.source_url) {
-            addButton('Открыть страницу раздачи', function () {
-                if (Lampa.Open && Lampa.Open.newWindow) Lampa.Open.newWindow(item.source_url)
-                else window.open(item.source_url, '_blank')
-            })
-        }
-
         scroll.append(body)
 
         function nav() {
