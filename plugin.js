@@ -185,7 +185,9 @@
                 Lampa.Select.close()
                 onPick(item.value)
             },
-            onBack: function () { Lampa.Select.close(); Lampa.Controller.toggle('content') }
+            // Select.close() уже вызывает onBack — повторный close здесь
+            // даёт бесконечную рекурсию (Maximum call stack size exceeded).
+            onBack: function () { Lampa.Controller.toggle('content') }
         })
     }
 
