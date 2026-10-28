@@ -353,8 +353,15 @@
         var item = normalize(object.item)
         var scroll = new Lampa.Scroll({ mask: true, over: true })
         var last = false
+        var body = $('<div class="settings-body"></div>')
 
         var VIDEO_EXT = ['mp4', 'mkv', 'avi', 'ts', 'm2ts', 'mov', 'flv', 'webm', 'wmv', 'mpg', 'mpeg', 'm4v', 'vob']
+
+        function escapeHtml(value) {
+            return String(value || '').replace(/[<>&"]/g, function (c) {
+                return { '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]
+            })
+        }
 
         function torrBase() {
             if (Lampa.Torserver && Lampa.Torserver.url) {
@@ -432,59 +439,117 @@
             }))
         }
 
-        var content = $('<div style="padding:2em 3em;max-width:60em;color:#fff"></div>')
-        content.append($('<h2></h2>').text(item.title))
-        if (item.original_title) content.append($('<p style="opacity:.7"></p>').text(item.original_title))
-        if (item.poster) content.append($('<img style="float:left;margin:0 1.2em 1em 0;width:11em;border-radius:.4em" />').attr('src', item.poster))
-        if (item.year) content.append($('<p></p>').text(item.year))
-        if (item.overview) content.append($('<p style="opacity:.85;line-height:1.45"></p>').text(item.overview))
+        var head = $('<h2 style="color:#fff;font-size:1.6em;margin:1em 1.5em .5em">' + escapeHtml(item.title) + '</h2>')
+        if (item.original_title) head.append('<div style="opacity:.6;font-size:.7em">' + escapeHtml(item.original_title) + '</div>')
+        body.append(head)
 
-        var actions = $('<div style="margin-top:1em;clear:both"></div>')
-
-        function action(name, callback) {
-            var el = $('<div class="selector" style="display:block;min-height:3.2em;padding:.65em .8em;margin:.45em 0;background:rgba(255,255,255,.06);border-radius:.35em"></div>').text(name)
-            el.on('hover:focus', function () { last = el })
-            el.on('hover:enter', callback)
-            actions.append(el)
+        if (item.poster) {
+            body.append('<div style="margin:0 1.5em"><img src="' + escapeHtml(item.poster) + '" style="width:11em;border-radius:.4em;float:left;margin-right:1.2em"></div>')
         }
 
-        if (item.magnet) action('Смотреть (TorrServer)', function () { watch(item.magnet) })
+        var meta = [item.year, item.quality].filter(Boolean).join(' · ')
+        if (meta) body.append('<p style="color:#fff;opacity:.8;margin:.5em 1.5em;clear:left">' + escapeHtml(meta) + '</p>')
+        if (item.overview) body.append('<p style="color:#fff;opacity:.85;line-height:1.45;margin:.5em 1.5em;clear:left">' + escapeHtml(item.overview) + '</p>')
+
+        function addButton(name, callback) {
+            var btn = $('<div class="settings-param selector"><div class="settings-param-name">' + escapeHtml(name) + '</div></div>')
+            btn.on('hover:focus', function () {
+                last = btn
+                scroll.update(btn)
+            })
+            btn.on('hover:enter', callback)
+            body.append(btn)
+        }
+
+        if (item.magnet) addButton('Смотреть (TorrServer)', function () { watch(item.magnet) })
 
         if (item.source_url) {
-            action('Открыть страницу раздачи', function () {
+            addButton('Открыть страницу раздачи', function () {
                 if (Lampa.Open && Lampa.Open.newWindow) Lampa.Open.newWindow(item.source_url)
                 else window.open(item.source_url, '_blank')
             })
         }
 
-        content.append(actions)
-        scroll.append(content)
+        scroll.append(body)
 
-        function startController() {
-            Lampa.Controller.add('content', {
-                link: this,
-                toggle: function () {
-                    Lampa.Controller.collectionSet(scroll.render(true))
-                    Lampa.Controller.collectionFocus(last || false, scroll.render(true))
-                },
-                up: function () {
-                    if (Lampa.Navigator && Lampa.Navigator.canmove) Lampa.Navigator.move('up')
-                    else if (window.Navigator && window.Navigator.canmove) window.Navigator.move('up')
-                },
-                down: function () {
-                    if (Lampa.Navigator && Lampa.Navigator.canmove) Lampa.Navigator.move('down')
-                    else if (window.Navigator && window.Navigator.canmove) window.Navigator.move('down')
-                },
-                left: function () {},
-                right: function () {},
-                back: function () { Lampa.Activity.backward() }
-            })
-            Lampa.Controller.toggle('content')
+        function startController(from) {
+            try {
+                Lampa.Controller.add('content', {
+                    link: this,
+                    toggle: function () {
+                        Lampa.Controller.collectionSet(scroll.render(true))
+                        Lampa.Controller.collectionFocus(last || body.find('.selector').first(), scroll.render(true))
+                    },
+                    up: function () {
+                        if (Lampa.Navigator && Lampa.Navigator.canmove) Lampa.Navigator.move('up')
+                        else if (window.Navigator && window.Navigator.canmove) window.Navigator.move('up')
+                    },
+                    down: function () {
+                        if (Lampa.Navigator && Lampa.Navigator.canmove) Lampa.Navigator.move('down')
+                        else if (window.Navigator && window.Navigator.canmove) window.Navigator.move('down')
+                    },
+                    left: function () { Lampa.Controller.toggle('menu') },
+                    right: function () {},
+                    back: function () { Lampa.Activity.backward() }
+                })
+                Lampa.Controller.toggle('content')
+
+                if (from) Lampa.Noty.show('NM detail: контроллер активирован (' + from + ')')
+            } catch (e) {
+                logError('startController', e)
+                Lampa.Noty.show('NM detail error: ' + e.message, true)
+            }
         }
 
-        this.create = function () { return this.render() }
+        this.create = function () {
+            var result = this.render()
+            // Страховка: если LAMPA не вызовет start(), контроллер всё равно зарегистрирован
+            startController.call(this, 'create')
+            return result
+        }
         this.render = function () { return scroll.render() }
-        this.start = startController
+        this.start = function () { startController.call(this, 'start') }
+        this.stop = function () {}
+        this.pause = function () {}
+        this.destroy = function () { scroll.destroy() }
+
+        function startController(from) {
+            try {
+                Lampa.Controller.add('content', {
+                    link: this,
+                    toggle: function () {
+                        Lampa.Controller.collectionSet(scroll.render(true))
+                        Lampa.Controller.collectionFocus(last || false, scroll.render(true))
+                    },
+                    up: function () {
+                        if (Lampa.Navigator && Lampa.Navigator.canmove) Lampa.Navigator.move('up')
+                        else if (window.Navigator && window.Navigator.canmove) window.Navigator.move('up')
+                    },
+                    down: function () {
+                        if (Lampa.Navigator && Lampa.Navigator.canmove) Lampa.Navigator.move('down')
+                        else if (window.Navigator && window.Navigator.canmove) window.Navigator.move('down')
+                    },
+                    left: function () {},
+                    right: function () {},
+                    back: function () { Lampa.Activity.backward() }
+                })
+                Lampa.Controller.toggle('content')
+
+                if (from) Lampa.Noty.show('NM detail: контроллер активирован (' + from + ')')
+            } catch (e) {
+                logError('startController', e)
+                Lampa.Noty.show('NM detail error: ' + e.message, true)
+            }
+        }
+
+        this.create = function () {
+            var result = this.render()
+            // Страховка: если LAMPA не вызовет start(), контроллер всё равно зарегистрирован
+            startController.call(this, 'create')
+            return result
+        }
+        this.render = function () { return scroll.render() }
+        this.start = function () { startController.call(this, 'start') }
         this.stop = function () {}
         this.pause = function () {}
         this.destroy = function () { scroll.destroy() }
