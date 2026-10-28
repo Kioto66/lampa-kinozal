@@ -436,6 +436,10 @@
 
             function fail(message) { notify(typeof message === 'string' ? message : 'TorrServer не принял раздачу', true) }
 
+            // hash живёт на уровне watch(): openFiles вызывается и из getVideoFiles,
+            // где колбэк-область с var hash недоступна (ReferenceError: hash is not defined)
+            var hash = ''
+
             function openFiles(files) {
                 files.sort(naturalSort)
                 if (files.length === 1) return playFile(base, hash, files[0], files)
@@ -452,7 +456,7 @@
             }
 
             network.silent(base + '/torrents', function (torrent) {
-                var hash = torrent && torrent.hash
+                hash = torrent && torrent.hash
                 if (!hash) return fail()
 
                 // Метаданные магнита могут догружаться несколько секунд — ждём файлы
