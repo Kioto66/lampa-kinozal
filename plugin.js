@@ -195,6 +195,22 @@
      * Ищем раздачу в TMDB руками самой LAMPA (её собственный ключ) и
      * открываем штатный экран карточки. Если не нашли — наш экран деталей.
      */
+    function cleanQuery(value) {
+        return String(value || '')
+            .replace(/\s*\([^)]*\)\s*/g, ' ') // хвосты вида «(1-12 серии из 12)», «(2024)»
+            .replace(/\s+/g, ' ')
+            .trim()
+    }
+
+    function collectSearchGroups(response) {
+        // Новые сборки: {movie: {...}, tv: {...}}, старые: массив групп.
+        if (Array.isArray(response)) return response
+        if (response && typeof response === 'object') {
+            return [response.movie, response.tv].filter(Boolean)
+        }
+        return []
+    }
+
     function openCard(item) {
         var native = field('native_cards', 'on') === 'on'
         var canNative = native && Lampa.Api && typeof Lampa.Api.search === 'function' && Lampa.Router && Lampa.Router.call
@@ -202,20 +218,22 @@
         if (!canNative) return openFallbackDetail(item)
 
         var queries = []
-        if (item.original_title) queries.push(item.original_title)
-        if (item.title && item.title !== item.original_title) queries.push(item.title)
+        ;[cleanQuery(item.original_title), cleanQuery(item.title)].forEach(function (query) {
+            if (query && queries.indexOf(query) < 0) queries.push(query)
+        })
+        if (!queries.length) return openFallbackDetail(item)
 
         function trySearch(index) {
             if (index >= queries.length) return openFallbackDetail(item)
 
-            Lampa.Api.search({ query: queries[index], page: 1 }, function (groups) {
+            Lampa.Api.search({ query: queries[index], page: 1 }, function (response) {
                 var wantType = item.type === 'series' ? 'tv' : 'movie'
                 var pool = []
-                ;(groups || []).forEach(function (group) {
+                collectSearchGroups(response).forEach(function (group) {
                     if (group && group.type === wantType && Array.isArray(group.results)) pool = pool.concat(group.results)
                 })
                 if (!pool.length) {
-                    ;(groups || []).forEach(function (group) {
+                    collectSearchGroups(response).forEach(function (group) {
                         if (group && group.type !== 'person' && Array.isArray(group.results)) pool = pool.concat(group.results)
                     })
                 }
