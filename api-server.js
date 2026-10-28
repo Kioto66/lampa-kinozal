@@ -29,6 +29,15 @@ const BROWSER_CACHE_TTL_MS = Math.max(0, Number(process.env.KINOZAL_CACHE_TTL_MS
 const BROWSER_MIN_INTERVAL_MS = Math.max(0, Number(process.env.KINOZAL_MIN_INTERVAL_MS || 3000))
 const MAGNET_RE = /^magnet:\?xt=urn:btih:[a-z0-9]{6,}(?:&[^\s]*)?$/i
 
+// Image proxy: posters from fastpic etc. are often unreachable from the TV,
+// so the server downloads and caches them locally. Disable with
+// KINOZAL_IMAGE_PROXY=off.
+const crypto = require('crypto')
+const IMG_CACHE_DIR = process.env.KINOZAL_IMG_CACHE || path.join(__dirname, '.img-cache')
+const IMAGE_PROXY_ENABLED = String(process.env.KINOZAL_IMAGE_PROXY || 'on').toLowerCase() !== 'off'
+const IMG_MAX_BYTES = 10 * 1024 * 1024
+const imgInflight = new Map()
+
 const TOP_CATEGORIES = Object.freeze({
     series: 3,
     series_ru: 31,
@@ -253,6 +262,94 @@ function pageOf(items, page, limit) {
     return { page, total_pages: totalPages, results: items.slice(start, start + limit) }
 }
 
+function proxyImageUrl(host, value) {
+    if (!IMAGE_PROXY_ENABLED || !host) return value
+    try {
+        const parsed = new URL(value)
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return value
+        return `http://${host}/img?url=${encodeURIComponent(parsed.toString())}`
+    } catch (error) {
+        return value
+    }
+}
+
+function proxyPosters(host, payload) {
+    payload.results = payload.results.map(item => {
+        if (item.poster) item.poster = proxyImageUrl(host, item.poster)
+        return item
+    })
+    return payload
+}
+
+function imageFilePath(urlKey) {
+    return path.join(IMG_CACHE_DIR, crypto.createHash('sha1').update(urlKey).digest('hex'))
+}
+
+async function downloadImage(target) {
+    const response = await fetch(target.toString(), {
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
+            'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8'
+        },
+        redirect: 'follow',
+        signal: AbortSignal.timeout(20000)
+    })
+    if (!response.ok) throw new Error(`Image HTTP ${response.status}`)
+    const contentType = String(response.headers.get('content-type') || 'image/jpeg')
+    if (!contentType.startsWith('image/')) throw new Error(`Not an image: ${contentType}`)
+    const bytes = Buffer.from(await response.arrayBuffer())
+    if (bytes.length > IMG_MAX_BYTES) throw new Error('Image too large')
+    return { bytes, contentType }
+}
+
+async function handleImage(res, rawUrl) {
+    let target
+    try {
+        target = new URL(String(rawUrl || ''))
+    } catch (error) {
+        return sendJson(res, 400, { ok: false, message: 'Некорректный url' })
+    }
+    if (target.protocol !== 'http:' && target.protocol !== 'https:') {
+        return sendJson(res, 400, { ok: false, message: 'Некорректный протокол' })
+    }
+
+    const file = imageFilePath(target.toString())
+    const metaFile = `${file}.type`
+
+    if (fs.existsSync(file) && fs.existsSync(metaFile)) {
+        res.writeHead(200, {
+            'Content-Type': fs.readFileSync(metaFile, 'utf8'),
+            'Cache-Control': 'public, max-age=604800',
+            'Access-Control-Allow-Origin': '*'
+        })
+        return res.end(fs.readFileSync(file))
+    }
+
+    let pending = imgInflight.get(target.toString())
+    if (!pending) {
+        pending = (async () => {
+            const { bytes, contentType } = await downloadImage(target)
+            fs.mkdirSync(IMG_CACHE_DIR, { recursive: true })
+            fs.writeFileSync(file, bytes)
+            fs.writeFileSync(metaFile, contentType)
+            return { bytes, contentType }
+        })().finally(() => imgInflight.delete(target.toString()))
+        imgInflight.set(target.toString(), pending)
+    }
+
+    try {
+        const { bytes, contentType } = await pending
+        res.writeHead(200, {
+            'Content-Type': contentType,
+            'Cache-Control': 'public, max-age=604800',
+            'Access-Control-Allow-Origin': '*'
+        })
+        return res.end(bytes)
+    } catch (error) {
+        return sendJson(res, 502, { ok: false, message: error.message || 'Не удалось скачать изображение' })
+    }
+}
+
 function readBody(req) {
     return new Promise((resolve, reject) => {
         let raw = ''
@@ -295,13 +392,13 @@ const server = http.createServer(async (req, res) => {
                 const category = String(url.searchParams.get('category') || 'movies')
                 const period = String(url.searchParams.get('period') || 'week')
                 const payload = await fetchBrowserTop(category, period)
-                return sendJson(res, 200, pageOf(payload.results, page, limit))
+                return sendJson(res, 200, proxyPosters(req.headers.host, pageOf(payload.results, page, limit)))
             }
             if (SOURCE === 'public') {
                 const category = String(url.searchParams.get('category') || 'movies')
                 const period = String(url.searchParams.get('period') || 'week')
                 const payload = await fetchPublicTop(category, period)
-                return sendJson(res, 200, pageOf(payload.results, page, limit))
+                return sendJson(res, 200, proxyPosters(req.headers.host, pageOf(payload.results, page, limit)))
             }
             const query = String(url.searchParams.get('q') || '').trim().toLocaleLowerCase()
             const matches = query
@@ -327,6 +424,10 @@ const server = http.createServer(async (req, res) => {
         } catch (error) {
             return sendJson(res, 400, { ok: false, message: 'Некорректное тело запроса' })
         }
+    }
+
+    if (req.method === 'GET' && url.pathname === '/img') {
+        return handleImage(res, url.searchParams.get('url'))
     }
 
     if (req.method === 'GET' && (url.pathname === '/plugin.js' || url.pathname === '/mock-results.json')) {

@@ -1,3 +1,4 @@
 node_modules/
 .kinozal-*-profile/
 .tmp-kinozal-profile/
+.img-cache/
