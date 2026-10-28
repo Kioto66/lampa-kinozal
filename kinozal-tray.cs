@@ -125,9 +125,14 @@ namespace KinozalTray
             var psi = new ProcessStartInfo
             {
                 FileName = chrome,
+                // Окно за пределами экрана + свёрнуто: Chrome игнорирует
+                // WindowStyle.Minimized при запуске с адресом, поэтому
+                // позиция за экраном — надёжный способ его не видеть.
                 Arguments = "--remote-debugging-port=9222 --user-data-dir=\"" +
                              System.IO.Path.Combine(appDir, profileName) +
-                             "\" --no-first-run --no-default-browser-check --window-size=1280,900 https://kinozal.me/",
+                             "\" --no-first-run --no-default-browser-check " +
+                             "--start-minimized --window-position=-32000,-32000 " +
+                             "--window-size=1280,900 https://kinozal.me/",
                 UseShellExecute = true,
                 WindowStyle = ProcessWindowStyle.Minimized
             };
@@ -205,7 +210,12 @@ namespace KinozalTray
                         {
                             var p = Process.GetProcessById(Convert.ToInt32(proc["ProcessId"]));
                             if (p.MainWindowHandle != IntPtr.Zero)
+                            {
                                 ShowWindow(p.MainWindowHandle, 9); // SW_RESTORE
+                                // Окно стартует за пределами экрана — возвращаем на видимое место
+                                MoveWindow(p.MainWindowHandle, 100, 100, 1280, 900, true);
+                                SetForegroundWindow(p.MainWindowHandle);
+                            }
                             return;
                         }
                     }
@@ -216,6 +226,12 @@ namespace KinozalTray
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern bool MoveWindow(IntPtr hWnd, int x, int y, int width, int height, bool repaint);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        static extern bool SetForegroundWindow(IntPtr hWnd);
 
         void ShowStatus()
         {
