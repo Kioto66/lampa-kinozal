@@ -350,6 +350,84 @@
         var scroll = new Lampa.Scroll({ mask: true, over: true })
         var last = false
 
+        var VIDEO_EXT = ['mp4', 'mkv', 'avi', 'ts', 'm2ts', 'mov', 'flv', 'webm', 'wmv', 'mpg', 'mpeg', 'm4v', 'vob']
+
+        function torrBase() {
+            if (Lampa.Torserver && Lampa.Torserver.url) {
+                var u = Lampa.Torserver.url()
+                if (u) return u.replace(/\/$/, '')
+            }
+            return (safeHttpUrl(field('torr_url', 'http://127.0.0.1:8090')) || '').replace(/\/$/, '')
+        }
+
+        function shortName(path) {
+            return path.split('/').pop().split('\\').pop()
+        }
+
+        function naturalSort(a, b) {
+            var an = a.path.replace(/\d+/g, function (m) { return m.length > 3 ? m : ('000' + m).substr(-4) })
+            var bn = b.path.replace(/\d+/g, function (m) { return m.length > 3 ? m : ('000' + m).substr(-4) })
+            return an.localeCompare(bn)
+        }
+
+        function playFile(base, hash, file, files) {
+            var index = typeof file.id !== 'undefined' ? file.id : files.indexOf(file)
+            var url = base + '/stream/' + encodeURIComponent(shortName(file.path)) + '?link=' + hash + '&index=' + index + '&play'
+
+            Lampa.Player.play({ title: item.title, url: url })
+            Lampa.Player.callback(function () { Lampa.Controller.toggle('content') })
+            Lampa.Player.playlist(files.map(function (f) {
+                var findex = typeof f.id !== 'undefined' ? f.id : files.indexOf(f)
+                return { title: shortName(f.path), url: base + '/stream/' + encodeURIComponent(shortName(f.path)) + '?link=' + hash + '&index=' + findex + '&play' }
+            }))
+        }
+
+        function watch(magnet) {
+            var base = torrBase()
+            if (!base) return notify('Не указан адрес TorrServer (настройки LAMPA или плагина NM)', true)
+            if (!Lampa.Player || !Lampa.Player.play) return notify('Плеер LAMPA недоступен в этой версии', true)
+
+            notify('Добавляю раздачу в TorrServer…')
+
+            var network = new Lampa.Reguest()
+            network.timeout(30000)
+
+            function fail(message) { notify(typeof message === 'string' ? message : 'TorrServer не принял раздачу', true) }
+
+            network.silent(base + '/torrents', function (torrent) {
+                var hash = torrent && torrent.hash
+                if (!hash) return fail()
+
+                network.silent(base + '/torrents', function (json) {
+                    var files = ((json || {}).file_stats || []).filter(function (f) {
+                        return VIDEO_EXT.indexOf(String(f.path).split('.').pop().toLowerCase()) >= 0
+                    })
+                    if (!files.length) return notify('В раздаче нет видеофайлов', true)
+
+                    files.sort(naturalSort)
+
+                    if (files.length === 1) return playFile(base, hash, files[0], files)
+
+                    Lampa.Select.show({
+                        title: 'Файлы раздачи',
+                        items: files.map(function (f) { return { title: shortName(f.path), file: f } }),
+                        onSelect: function (selected) {
+                            Lampa.Select.close()
+                            playFile(base, hash, selected.file, files)
+                        },
+                        onBack: function () { Lampa.Select.close(); Lampa.Controller.toggle('content') }
+                    })
+                }, fail, JSON.stringify({ action: 'get', hash: hash }))
+            }, fail, JSON.stringify({
+                action: 'add',
+                link: magnet,
+                title: item.title,
+                poster: item.poster || '',
+                save_to_db: false,
+                category: item.type === 'series' ? 'tv' : 'movie'
+            }))
+        }
+
         var content = $('<div style="padding:2em 3em;max-width:60em;color:#fff"></div>')
         content.append($('<h2></h2>').text(item.title))
         if (item.original_title) content.append($('<p style="opacity:.7"></p>').text(item.original_title))
@@ -357,13 +435,25 @@
         if (item.year) content.append($('<p></p>').text(item.year))
         if (item.overview) content.append($('<p style="opacity:.85;line-height:1.45"></p>').text(item.overview))
 
-        if (item.source_url) {
-            var open = $('<div class="selector" style="display:block;min-height:3.2em;padding:.65em .8em;margin-top:1em;background:rgba(255,255,255,.06);border-radius:.35em"></div>').text('Открыть страницу раздачи')
-            open.on('hover:focus', function () { last = open })
-            open.on('hover:enter', function () { window.open(item.source_url, '_blank') })
-            content.append(open)
+        var actions = $('<div style="margin-top:1em;clear:both"></div>')
+
+        function action(name, callback) {
+            var el = $('<div class="selector" style="display:block;min-height:3.2em;padding:.65em .8em;margin:.45em 0;background:rgba(255,255,255,.06);border-radius:.35em"></div>').text(name)
+            el.on('hover:focus', function () { last = el })
+            el.on('hover:enter', callback)
+            actions.append(el)
         }
 
+        if (item.magnet) action('Смотреть (TorrServer)', function () { watch(item.magnet) })
+
+        if (item.source_url) {
+            action('Открыть страницу раздачи', function () {
+                if (Lampa.Open && Lampa.Open.newWindow) Lampa.Open.newWindow(item.source_url)
+                else window.open(item.source_url, '_blank')
+            })
+        }
+
+        content.append(actions)
         scroll.append(content)
 
         function startController() {
@@ -401,6 +491,7 @@
         Lampa.SettingsApi.addComponent({ component: NS + 'settings', name: 'NM — NNM-Club', icon: '' })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'section', type: 'select', values: { movies_new: 'Новинки кино', movies_foreign: 'Зарубежное кино (вкл. HD, UHD)', series_ru: 'Наши сериалы', series_foreign: 'Зарубежные сериалы', doc: 'Документалки и ТВ-бренды', theater: 'Театр и МузВидео' }, default: 'movies_new' }, field: { name: 'Раздел' } })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'proxy_url', type: 'input', values: '', default: DEFAULT_PROXY_URL }, field: { name: 'URL локального API', description: 'По умолчанию: ' + DEFAULT_PROXY_URL } })
+        Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'torr_url', type: 'input', values: '', default: 'http://127.0.0.1:8090' }, field: { name: 'TorrServer', description: 'Если не задан в настройках LAMPA (по умолчанию: 127.0.0.1:8090)' } })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'native_cards', type: 'select', values: { on: 'Открывать карточки LAMPA (TMDB)', off: 'Показывать только раздачу' }, default: 'on' }, field: { name: 'Экран карточки' } })
     }
 
