@@ -46,6 +46,7 @@ namespace KinozalTray
             miStart = new ToolStripMenuItem("Запустить всё", null, (s, e) => StartAll());
             miStop = new ToolStripMenuItem("Остановить всё", null, (s, e) => StopAll());
             var miOpen = new ToolStripMenuItem("Открыть окно Chrome", null, (s, e) => RestoreChrome());
+            var miHide = new ToolStripMenuItem("Спрятать окно Chrome", null, (s, e) => HideChrome());
             var miExit = new ToolStripMenuItem("Выход", null, (s, e) => ExitTray());
 
             menu.Items.Add(miStatus);
@@ -54,6 +55,7 @@ namespace KinozalTray
             menu.Items.Add(miStop);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(miOpen);
+            menu.Items.Add(miHide);
             menu.Items.Add(miExit);
 
             tray = new NotifyIcon
@@ -222,6 +224,27 @@ namespace KinozalTray
             }
             catch { }
             StartChrome();
+        }
+
+        void HideChrome()
+        {
+            try
+            {
+                var query = new SelectQuery("Win32_Process", "Name = 'chrome.exe'");
+                using (var searcher = new ManagementObjectSearcher(query))
+                    foreach (var proc in searcher.Get())
+                    {
+                        var cmdline = (proc["CommandLine"] as string) ?? "";
+                        if (cmdline.IndexOf(profileName, StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            var p = Process.GetProcessById(Convert.ToInt32(proc["ProcessId"]));
+                            if (p.MainWindowHandle != IntPtr.Zero)
+                                MoveWindow(p.MainWindowHandle, -32000, -32000, 1280, 900, true);
+                            return;
+                        }
+                    }
+            }
+            catch { }
         }
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
