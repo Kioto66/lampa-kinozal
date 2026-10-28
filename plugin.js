@@ -9,6 +9,8 @@
     // Default address of the local API on the home network. It can still be
     // changed in settings if the computer receives another LAN address.
     var DEFAULT_PROXY_URL = 'http://192.168.11.71:8787'
+    // TorrServer runs on the TV box itself, so localhost is the default here.
+    var DEFAULT_TORR_URL = 'http://127.0.0.1:8090'
     var PAGE_LIMIT = 50
 
     var TOP_CATEGORIES = [
@@ -84,6 +86,14 @@
     function number(value) {
         var parsed = Number(value)
         return isFinite(parsed) ? parsed : 0
+    }
+
+    function escapeHtml(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
     }
 
     function normalize(item) {
@@ -521,40 +531,53 @@
         return hasMaker ? MakerScreen(object) : LegacyScreen(object)
     }
 
+    /*
+     * Экран деталей раздачи — резервный путь, когда TMDB-поиск не сработал.
+     * Штатный контроллер LAMPA работает только с элементами, добавленными в
+     * `Lampa.Scroll` как `selector`; для кнопок используется готовый шаблон
+     * `settings_params` (там уже есть focus/enter и стили подсветки).
+     */
     function DetailScreen(object) {
         var item = normalize(object.item)
         var scroll = new Lampa.Scroll({ mask: true, over: true })
         var last = false
-        var torr = new TorrAdapter(field('torr_url', ''))
+        var torr = new TorrAdapter(field('torr_url', '') || DEFAULT_TORR_URL)
+        var body = $('<div class="settings-body"></div>')
 
-        var content = $('<div class="kinozal-detail" style="padding:2em 3em;max-width:60em;color:#fff"></div>')
+        var head = $('<h2 style="color:#fff;font-size:1.6em;margin:1em 1.5em .5em">' + escapeHtml(item.title) + '</h2>')
+        if (item.original_title) head.append('<div style="opacity:.6;font-size:.7em">' + escapeHtml(item.original_title) + '</div>')
+        body.append(head)
 
-        content.append($('<h2></h2>').text(item.title))
-        if (item.original_title) content.append($('<p style="opacity:.7"></p>').text(item.original_title))
-        if (item.poster) content.append($('<img style="float:left;margin:0 1.2em 1em 0;width:11em;border-radius:.4em" />').attr('src', item.poster))
-        content.append($('<p></p>').text([item.year, item.quality, item.codec, item.size].filter(Boolean).join(' · ')))
-        if (item.overview) content.append($('<p style="opacity:.85;line-height:1.45"></p>').text(item.overview))
-        content.append($('<p style="opacity:.85"></p>').text([
+        if (item.poster) {
+            body.append('<div style="margin:0 1.5em"><img src="' + escapeHtml(item.poster) + '" style="width:11em;border-radius:.4em;float:left;margin-right:1.2em"></div>')
+        }
+
+        var meta = [item.year, item.quality, item.codec, item.size].filter(Boolean).join(' · ')
+        if (meta) body.append('<p style="color:#fff;opacity:.8;margin:.5em 1.5em;clear:left">' + escapeHtml(meta) + '</p>')
+        if (item.overview) body.append('<p style="color:#fff;opacity:.85;line-height:1.45;margin:.5em 1.5em;clear:left">' + escapeHtml(item.overview) + '</p>')
+
+        body.append('<p style="color:#fff;opacity:.85;margin:.5em 1.5em;clear:left">' + escapeHtml([
             'Аудио: ' + (item.audio || '—'),
             'Длительность: ' + (item.duration || '—'),
             'Сиды: ' + item.seeds,
             'Пиры: ' + item.peers
-        ].join(' · ')))
+        ].join(' · ')) + '</p>')
 
-        var actions = $('<div style="margin-top:1em;clear:both"></div>')
-
-        function action(name, callback) {
-            var el = $('<div class="selector" style="display:block;min-height:3.2em;padding:.65em .8em;margin:.45em 0;background:rgba(255,255,255,.06);border-radius:.35em"></div>').text(name)
-            el.on('hover:focus', function () { last = el })
-            el.on('hover:enter', callback)
-            actions.append(el)
+        function addButton(name, callback) {
+            var btn = $('<div class="settings-param selector"><div class="settings-param-name">' + escapeHtml(name) + '</div></div>')
+            btn.on('hover:focus', function () {
+                last = btn
+                scroll.update(btn)
+            })
+            btn.on('hover:enter', callback)
+            body.append(btn)
         }
 
-        action('Передать в TorrServer', function () {
+        addButton('Передать в TorrServer', function () {
             torr.send(item, function () { notify('Раздача передана') }, function (message) { notify(message, true) })
         })
 
-        action('Показать magnet', function () {
+        addButton('Показать magnet', function () {
             if (!item.magnet) return notify('У карточки нет magnet', true)
             Lampa.Modal.open({
                 title: 'Magnet-ссылка',
@@ -566,32 +589,34 @@
         })
 
         if (item.source_url) {
-            action('Открыть страницу раздачи', function () {
+            addButton('Открыть страницу раздачи', function () {
                 if (Lampa.Open && Lampa.Open.newWindow) Lampa.Open.newWindow(item.source_url)
                 else window.open(item.source_url, '_blank')
             })
         }
 
-        content.append(actions)
-        scroll.append(content)
+        scroll.append(body)
+
+        function nav() {
+            return (Lampa.Navigator && Lampa.Navigator.canmove) ? Lampa.Navigator : window.Navigator
+        }
 
         function startController() {
             Lampa.Controller.add('content', {
                 link: this,
                 toggle: function () {
                     Lampa.Controller.collectionSet(scroll.render(true))
-                    Lampa.Controller.collectionFocus(last || false, scroll.render(true))
+                    Lampa.Controller.collectionFocus(last || body.find('.selector').first(), scroll.render(true))
                 },
                 up: function () {
-                    if (Lampa.Navigator && Lampa.Navigator.canmove) Lampa.Navigator.move('up')
-                    else if (window.Navigator && window.Navigator.canmove) window.Navigator.move('up')
+                    if (nav().canmove('up')) nav().move('up')
+                    else Lampa.Controller.toggle('head')
                 },
                 down: function () {
-                    if (Lampa.Navigator && Lampa.Navigator.canmove) Lampa.Navigator.move('down')
-                    else if (window.Navigator && window.Navigator.canmove) window.Navigator.move('down')
+                    if (nav().canmove('down')) nav().move('down')
                 },
-                left: function () {},
-                right: function () {},
+                left: function () { Lampa.Controller.toggle('menu') },
+                right: function () { Lampa.Controller.toggle('content') },
                 back: function () { Lampa.Activity.backward() }
             })
 
@@ -639,7 +664,7 @@
         })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'mode', type: 'select', values: { mock: 'mock', proxy: 'proxy' }, default: 'mock' }, field: { name: 'Источник данных', description: 'mock не делает сетевых запросов' } })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'proxy_url', type: 'input', values: '', default: DEFAULT_PROXY_URL }, field: { name: 'URL локального API', description: 'По умолчанию: ' + DEFAULT_PROXY_URL } })
-        Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'torr_url', type: 'input', values: '', default: '' }, field: { name: 'URL TorrServer', description: 'Добавление выполняется только по кнопке карточки' } })
+        Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'torr_url', type: 'input', values: '', default: DEFAULT_TORR_URL }, field: { name: 'URL TorrServer', description: 'По умолчанию: ' + DEFAULT_TORR_URL } })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'native_cards', type: 'select', values: { on: 'Открывать карточки LAMPA (TMDB)', off: 'Показывать только раздачу' }, default: 'on' }, field: { name: 'Экран карточки', description: 'TMDB-поиск выполняет сама LAMPA своим ключом' } })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'category', type: 'select', values: { movies: 'Фильмы', series: 'Сериалы общие', series_ru: 'Сериалы российские', series_foreign: 'Сериалы зарубежные' }, default: 'movies' }, field: { name: 'Раздел топа' } })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'period', type: 'select', values: { week: 'За неделю', month: 'За месяц' }, default: 'week' }, field: { name: 'Период топа' } })
