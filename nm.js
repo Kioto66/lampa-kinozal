@@ -549,47 +549,6 @@
         this.stop = function () {}
         this.pause = function () {}
         this.destroy = function () { closed = true; scroll.destroy() }
-
-        function startController(from) {
-            try {
-                Lampa.Controller.add('content', {
-                    link: this,
-                    toggle: function () {
-                        Lampa.Controller.collectionSet(scroll.render(true))
-                        Lampa.Controller.collectionFocus(last || false, scroll.render(true))
-                    },
-                    up: function () {
-                        if (Lampa.Navigator && Lampa.Navigator.canmove) Lampa.Navigator.move('up')
-                        else if (window.Navigator && window.Navigator.canmove) window.Navigator.move('up')
-                    },
-                    down: function () {
-                        if (Lampa.Navigator && Lampa.Navigator.canmove) Lampa.Navigator.move('down')
-                        else if (window.Navigator && window.Navigator.canmove) window.Navigator.move('down')
-                    },
-                    left: function () {},
-                    right: function () {},
-                    back: function () { Lampa.Activity.backward() }
-                })
-                Lampa.Controller.toggle('content')
-
-                if (from) Lampa.Noty.show('NM detail: контроллер активирован (' + from + ')')
-            } catch (e) {
-                logError('startController', e)
-                Lampa.Noty.show('NM detail error: ' + e.message, true)
-            }
-        }
-
-        this.create = function () {
-            var result = this.render()
-            // Страховка: если LAMPA не вызовет start(), контроллер всё равно зарегистрирован
-            startController.call(this, 'create')
-            return result
-        }
-        this.render = function () { return scroll.render() }
-        this.start = function () { startController.call(this, 'start') }
-        this.stop = function () {}
-        this.pause = function () {}
-        this.destroy = function () { scroll.destroy() }
     }
 
     function registerSettings() {
