@@ -351,10 +351,11 @@ function nmBaseKey(title) {
 }
 
 function nmQuality(title) {
-    if (/2160p|UHD|4K/i.test(title)) return 3
-    if (/1080p|FHD/i.test(title)) return 2
-    if (/720p|HD/i.test(title)) return 1
-    return 0
+    // Пользователь смотрит максимум 1080p: 4K-дубли отбрасываем в конец
+    if (/2160p|UHD|4K/i.test(title)) return 0
+    if (/1080p|FHD/i.test(title)) return 4
+    if (/720p|HD\b/i.test(title)) return 3
+    return 2
 }
 
 function nmIsSeries(title) {

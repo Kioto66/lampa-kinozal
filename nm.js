@@ -424,7 +424,7 @@
             tick()
         }
 
-        function watch(magnet) {
+        function watchStart(magnet) {
             var base = torrBase()
             if (!base) return notify('Не указан адрес TorrServer (настройки LAMPA или плагина NM)', true)
             if (!Lampa.Player || !Lampa.Player.play) return notify('Плеер LAMPA недоступен в этой версии', true)
@@ -441,19 +441,8 @@
             var hash = ''
 
             function openFiles(files) {
-                files.sort(naturalSort)
-                if (files.length === 1) return playFile(base, hash, files[0], files)
-
-                Lampa.Select.show({
-                    title: 'Файлы раздачи',
-                    items: files.map(function (f) { return { title: shortName(f.path), file: f } }),
-                    onSelect: function (selected) {
-                        Lampa.Select.close()
-                        playFile(base, hash, selected.file, files)
-                    },
-                    onBack: function () { Lampa.Select.close(); Lampa.Controller.toggle('content') }
-                })
-            }
+            showFileList(base, hash, files)
+        }
 
             network.silent(base + '/torrents', function (torrent) {
                 hash = torrent && torrent.hash
@@ -477,37 +466,92 @@
         }
 
         var hasData = !!(object.item && (object.item.id || object.item.title))
-        var head = hasData
-            ? $('<h2 style="color:#fff;font-size:1.6em;margin:1em 1.5em .5em">' + escapeHtml(item.title) + '</h2>')
-            : $('<h2 style="color:#fff;font-size:1.6em;margin:1em 1.5em .5em">Раздача недоступна</h2>')
-        if (hasData && item.original_title) head.append('<div style="opacity:.6;font-size:.7em">' + escapeHtml(item.original_title) + '</div>')
-        body.append(head)
 
-        if (hasData && item.poster) {
-            body.append('<div style="margin:0 1.5em"><img src="' + escapeHtml(item.poster) + '" style="width:11em;border-radius:.4em;float:left;margin-right:1.2em"></div>')
+        function humanSize(bytes) {
+            var v = Number(bytes) || 0
+            if (v > 1073741824) return (v / 1073741824).toFixed(2) + ' GB'
+            if (v > 1048576) return (v / 1048576).toFixed(0) + ' MB'
+            return (v / 1024).toFixed(0) + ' KB'
         }
 
-        var meta = [item.year, item.quality].filter(Boolean).join(' · ')
-        if (hasData && meta) body.append('<p style="color:#fff;opacity:.8;margin:.5em 1.5em;clear:left">' + escapeHtml(meta) + '</p>')
-        if (hasData && item.overview) body.append('<p style="color:#fff;opacity:.85;line-height:1.45;margin:.5em 1.5em;clear:left">' + escapeHtml(item.overview) + '</p>')
-
-        if (!hasData) {
-            body.append('<p style="color:#fff;opacity:.85;margin:1em 1.5em">Данные раздачи не сохранились после перезапуска LAMPA. Нажмите влево, чтобы открыть главное меню, или вправо — чтобы выбрать раздел NM.</p>')
+        function addWatchStyle() {
+            if (window.lampa_nm_watch_style) return
+            window.lampa_nm_watch_style = true
+            $('<style>').text('.nm-watch{background:#3d7dd8;color:#fff;opacity:.8}.nm-watch.focus{background:#fff;color:#000;opacity:1}').appendTo('head')
         }
 
-        function addButton(name, callback) {
-            var btn = $('<div class="settings-param selector"><div class="settings-param-name">' + escapeHtml(name) + '</div></div>')
-            btn.on('hover:focus', function () {
-                last = btn
-                scroll.update(btn)
+        function buildDetail() {
+            body.empty()
+
+            var head = hasData
+                ? $('<h2 style="color:#fff;font-size:1.6em;margin:1em 1.5em .5em">' + escapeHtml(item.title) + '</h2>')
+                : $('<h2 style="color:#fff;font-size:1.6em;margin:1em 1.5em .5em">Раздача недоступна</h2>')
+            if (hasData && item.original_title) head.append('<div style="opacity:.6;font-size:.7em">' + escapeHtml(item.original_title) + '</div>')
+            body.append(head)
+
+            if (hasData && item.poster) {
+                body.append('<div style="margin:0 1.5em"><img src="' + escapeHtml(item.poster) + '" style="width:11em;border-radius:.4em;float:left;margin-right:1.2em"></div>')
+            }
+
+            var meta = [item.year, item.quality].filter(Boolean).join(' · ')
+            if (hasData && meta) body.append('<p style="color:#fff;opacity:.8;margin:.5em 1.5em;clear:left">' + escapeHtml(meta) + '</p>')
+            if (hasData && item.overview) body.append('<p style="color:#fff;opacity:.85;line-height:1.45;margin:.5em 1.5em;clear:left">' + escapeHtml(item.overview) + '</p>')
+
+            if (!hasData) {
+                body.append('<p style="color:#fff;opacity:.85;margin:1em 1.5em">Данные раздачи не сохранились после перезапуска LAMPA. Нажмите влево, чтобы открыть главное меню, или вправо — чтобы выбрать раздел NM.</p>')
+            }
+
+            function addButton(name, callback) {
+                var btn = $('<div class="settings-param selector"><div class="settings-param-name">' + escapeHtml(name) + '</div></div>')
+                btn.on('hover:focus', function () {
+                    last = btn
+                    scroll.update(btn)
+                })
+                btn.on('hover:enter', callback)
+                body.append(btn)
+            }
+
+            if (hasData && item.magnet) {
+                addWatchStyle()
+                var watch = $('<div class="simple-button selector nm-watch" style="margin:1em 1.5em;display:inline-flex">&#9654; Смотреть (TorrServer)</div>')
+                watch.on('hover:focus', function () {
+                    last = watch
+                    scroll.update(watch)
+                })
+                watch.on('hover:enter', function () { watchStart(item.magnet) })
+                body.append(watch)
+            }
+        }
+
+        // Экран выбора файла вместо Lampa.Select: Select на большом списке
+        // подвешивал слабые ТВ-устройства намертво.
+        function showFileList(base, hash, files) {
+            mode = 'files'
+            filesState = { base: base, hash: hash, files: files }
+            last = false
+            body.empty()
+
+            body.append($('<h2 style="color:#fff;font-size:1.4em;margin:1em 1.5em .5em">Файлы раздачи (' + files.length + ')</h2>'))
+
+            files.slice(0, 300).forEach(function (f) {
+                var btn = $('<div class="settings-param selector"><div class="settings-param-name">' + escapeHtml(shortName(f.path)) + '</div><div class="settings-param-value">' + humanSize(f.length) + '</div></div>')
+                btn.on('hover:focus', function () { scroll.update(btn) })
+                btn.on('hover:enter', function () { playFile(base, hash, f, files) })
+                body.append(btn)
             })
-            btn.on('hover:enter', callback)
-            body.append(btn)
+
+            scroll.reset()
+            Lampa.Controller.toggle('content')
         }
 
-        if (hasData && item.magnet) addButton('Смотреть (TorrServer)', function () { watch(item.magnet) })
-
-        scroll.append(body)
+        function restoreDetail() {
+            mode = 'detail'
+            filesState = null
+            last = false
+            buildDetail()
+            scroll.reset()
+            Lampa.Controller.toggle('content')
+        }
 
         function startController() {
             try {
@@ -517,17 +561,21 @@
                         Lampa.Controller.collectionSet(scroll.render(true))
                         Lampa.Controller.collectionFocus(last || body.find('.selector').first(), scroll.render(true))
                     },
+                    left: function () { Lampa.Controller.toggle('menu') },
+                    right: function () { openSectionMenu(field('section', 'movies_new')) },
                     up: function () {
                         if (Lampa.Navigator && Lampa.Navigator.canmove) Lampa.Navigator.move('up')
                         else if (window.Navigator && window.Navigator.canmove) window.Navigator.move('up')
+                        else Lampa.Controller.toggle('head')
                     },
                     down: function () {
                         if (Lampa.Navigator && Lampa.Navigator.canmove) Lampa.Navigator.move('down')
                         else if (window.Navigator && window.Navigator.canmove) window.Navigator.move('down')
                     },
-                    left: function () { Lampa.Controller.toggle('menu') },
-                    right: function () { openSectionMenu(field('section', 'movies_new')) },
-                    back: function () { Lampa.Activity.backward() }
+                    back: function () {
+                        if (mode === 'files') restoreDetail()
+                        else Lampa.Activity.backward()
+                    }
                 })
                 Lampa.Controller.toggle('content')
             } catch (e) {
@@ -536,9 +584,13 @@
             }
         }
 
+        var mode = 'detail'
+        var filesState = null
         var closed = false
 
         this.create = function () {
+            buildDetail()
+            scroll.append(body)
             var result = this.render()
             // Страховка: если LAMPA не вызовет start(), контроллер всё равно зарегистрирован
             startController.call(this)
