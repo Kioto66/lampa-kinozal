@@ -473,11 +473,34 @@ async function rtNavigate(page, url) {
     return html
 }
 
-async function rtFetchHtml(url, isCard) {
+let rtOriginWarm = false
+
+async function rtWarmOrigin() {
     await rtEnsurePages()
+    if (rtOriginWarm) return
+    // Все страницы должны стоять на origin rutracker.org — тогда внутренний
+    // fetch ходит с куками и отпечатком браузера и проходит Cloudflare
+    await rtNavigate(rtPageList, RT_BASE + '/forum/index.php')
+    for (const page of rtPagesCard) await rtNavigate(page, RT_BASE + '/forum/index.php')
+    rtOriginWarm = true
+}
+
+async function rtFetchHtml(url, isCard) {
+    await rtWarmOrigin()
     const page = isCard ? rtPagesCard[rtCardPageIdx++ % rtPagesCard.length] : rtPageList
     const prev = rtPageChains.get(page) || Promise.resolve()
-    const run = prev.then(() => rtNavigate(page, url))
+    const run = prev.then(async () => {
+        // Быстрый путь: fetch внутри страницы (куки + отпечаток браузера)
+        try {
+            const html = await page.evaluate(async (u) => {
+                const r = await fetch(u, { credentials: 'include' })
+                return await r.text()
+            }, url)
+            if (html && !/Just a moment/i.test(html)) return html
+        } catch (e) { /* упадём в медленную навигацию */ }
+        // Резерв: полноценная навигация вкладки
+        return rtNavigate(page, url)
+    })
     rtPageChains.set(page, run.catch(() => ''))
     return run
 }

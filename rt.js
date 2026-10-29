@@ -219,17 +219,14 @@
                 card.use({
                     onlyEnter: function () { openCard(data) }
                 })
-                // Постеры лежат внутри тем — догружаем лениво, первые 30 карточек
-                if (data.rt_id && !data.poster && posterBudget < 30) {
+                // Постеры лежат внутри тем — догружаем лениво, до 60 карточек
+                if (data.rt_id && !data.poster && posterBudget < 60) {
                     posterBudget++
                     provider.card(data.rt_id).then(function (info) {
                         if (info.poster) {
                             data.poster = info.poster
                             data.img = info.poster
                             try { if (card.img && card.img.length) card.img.attr('src', info.poster) } catch (e) { }
-                            setTimeout(function () {
-                                try { if (card.img && card.img.length) card.img.attr('src', info.poster) } catch (e) { }
-                            }, 1500)
                         }
                         if (info.overview) data.overview = info.overview
                     }).catch(function () { })
