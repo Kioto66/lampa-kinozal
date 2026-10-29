@@ -226,7 +226,16 @@
                         if (info.poster) {
                             data.poster = info.poster
                             data.img = info.poster
-                            try { if (card.img && card.img.length) card.img.attr('src', info.poster) } catch (e) { }
+                            // card.img мог ещё не существовать в момент onInstance —
+                            // ищем картинку через render, с повтором на всякий случай
+                            var setImg = function () {
+                                try {
+                                    var img = (card.img && card.img.length) ? card.img : card.render(true).find('.card__img')
+                                    if (img && img.length) img.attr('src', info.poster)
+                                } catch (e) { }
+                            }
+                            setImg()
+                            setTimeout(setImg, 3000)
                         }
                         if (info.overview) data.overview = info.overview
                     }).catch(function () { })

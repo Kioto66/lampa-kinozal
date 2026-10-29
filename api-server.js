@@ -490,15 +490,18 @@ async function rtFetchHtml(url, isCard) {
     const page = isCard ? rtPagesCard[rtCardPageIdx++ % rtPagesCard.length] : rtPageList
     const prev = rtPageChains.get(page) || Promise.resolve()
     const run = prev.then(async () => {
-        // Быстрый путь: fetch внутри страницы (куки + отпечаток браузера)
+        // Быстрый путь: fetch внутри страницы (куки + отпечаток браузера).
+        // Рутрекер отдаёт windows-1251 — декодируем байты в браузере,
+        // иначе русский текст превращается в кракозябры.
         try {
             const html = await page.evaluate(async (u) => {
                 const r = await fetch(u, { credentials: 'include' })
-                return await r.text()
+                const bytes = await r.arrayBuffer()
+                return new TextDecoder('windows-1251').decode(bytes)
             }, url)
             if (html && !/Just a moment/i.test(html)) return html
         } catch (e) { /* упадём в медленную навигацию */ }
-        // Резерв: полноценная навигация вкладки
+        // Резерв: полноценная навигация вкладки (page.content() декодирует сам)
         return rtNavigate(page, url)
     })
     rtPageChains.set(page, run.catch(() => ''))
@@ -536,9 +539,14 @@ function rtParseForum(html) {
 
 function rtParseTopic(html) {
     const magnet = (html.match(/magnet:\?xt=urn:btih:[A-F0-9a-f]{32,}/) || [])[0] || ''
-    const poster = rtDecodeHtml((html.match(/<var[^>]*class="[^"]*postImg[^"]*"[^>]*title="([^"]+)"/i) || [])[1] || '')
+    // Постер: первая картинка первого поста. У Рутрекера она может быть
+    // и в <var class="postImg" title="URL">, и обычным <img class="postImg">.
+    const firstPost = (html.match(/class="post_body"[^>]*>([\s\S]{0,6000}?)<\/div>/) || [])[1] || html
+    let poster = rtDecodeHtml((firstPost.match(/class="postImg[^"]*"[^>]*title="([^"]+)"/i) || [])[1] || '')
+    if (!poster) poster = rtDecodeHtml((firstPost.match(/<img[^>]+class="[^"]*postImg[^"]*"[^>]*src="([^"]+)"/i) || [])[1] || '')
+    if (!poster) poster = rtDecodeHtml((firstPost.match(/<img[^>]+src="(https?:\/\/[^"]+(?:fastpic|imageban|postimg|pixhost|imgur|rutracker)[^"]*\.(?:jpg|jpeg|png|webp)[^"]*)"/i) || [])[1] || '')
     const descChunk = (html.match(/class="post_body"[^>]*>([\s\S]{0,6000}?)<\/div>/) || [])[1] || ''
-    const desc = rtDecodeHtml(descChunk.replace(/<var[\s\S]*?<\/var>/g, ' ').replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim()
+    const desc = rtDecodeHtml(descChunk.replace(/<var[\s\S]*?<\/var>/g, ' ').replace(/<img[^>]+>/g, ' ').replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim()
     return { magnet, poster: poster.trim(), overview: desc.slice(0, 700) }
 }
 
