@@ -507,12 +507,12 @@
 
             if (item.pl_id) {
                 addWatchStyle()
-                var watch = $('<div class="simple-button selector pl-watch" style="margin:1em 1.5em;display:inline-flex">&#9654; Смотреть (TorrServer)</div>')
-                watch.on('hover:focus', function () {
-                    last = watch
-                    scroll.update(watch)
+                var watchBtn = $('<div class="simple-button selector pl-watch" style="margin:1em 1.5em;display:inline-flex">&#9654; Смотреть (TorrServer)</div>')
+                watchBtn.on('hover:focus', function () {
+                    last = watchBtn
+                    scroll.update(watchBtn)
                 })
-                watch.on('hover:enter', function () {
+                watchBtn.on('hover:enter', function () {
                     if (magnet) return watch(magnet)
                     notify('Получаю данные раздачи с Pornolab…')
                     providerCard(function (info) {
@@ -526,7 +526,7 @@
                         }
                     }, function (message) { notify(message, true) })
                 })
-                body.append(watch)
+                body.append(watchBtn)
             }
         }
 
