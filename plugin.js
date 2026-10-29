@@ -167,7 +167,13 @@
         this.network.silent(url, function (response) {
             try { done(parseSearchResponse(response)) } catch (e) { fail('Локальный API вернул неверный JSON') }
         }, function (xhr, exception) {
-            fail(this.network.errorDecode ? this.network.errorDecode(xhr, exception) : 'Ошибка локального API')
+            // Сервер отдаёт внятные ошибки (например, просьбу пройти Cloudflare) — показываем их
+            var message = ''
+            try {
+                var data = typeof xhr.responseText === 'string' ? JSON.parse(xhr.responseText) : null
+                if (data && data.message) message = String(data.message)
+            } catch (e) { }
+            fail(message || (this.network.errorDecode ? this.network.errorDecode(xhr, exception) : 'Ошибка локального API'))
         }.bind(this))
     }
     ProxyProvider.prototype.clear = function () { this.network.clear() }
