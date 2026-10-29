@@ -460,7 +460,8 @@ async function rtEnsurePages() {
         const page = await getBrowserPage()
         const ctx = page.context()
         rtPageList = await ctx.newPage()
-        for (let i = 0; i < 2; i++) rtPagesCard.push(await ctx.newPage())
+        // 3 воркера: на 60 карточек два не успевали — хвост падал по таймауту
+        for (let i = 0; i < 3; i++) rtPagesCard.push(await ctx.newPage())
     })().catch(e => { rtPagesReady = null; throw e })
     return rtPagesReady
 }
@@ -591,6 +592,320 @@ async function rtCard(topicId) {
     const payload = Object.assign({ rt_id: topicId }, parsed)
     rtCardCache.set(topicId, { at: Date.now(), payload })
     return payload
+}
+
+/*
+ * PL (Pornolab.net) — тот же движок TorrentPier, что у Рутрекера, windows-1251.
+ * Списки (чарты популярных релизов f=489 и ситрипы) читаются анонимно обычным
+ * fetch — браузер не нужен. Карточки и магниты — через одну залогиненную вкладку
+ * проекта Chrome (магнит на странице не показывается, считаем infohash из .torrent).
+ */
+const PL_BASE = (process.env.PL_BASE_URL || 'https://pornolab.net/forum').replace(/\/$/, '')
+const PL_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131 Safari/537.36'
+const PL_LIST_TTL_MS = Math.max(0, Number(process.env.PL_LIST_TTL_MS || 300000))
+const PL_CARD_TTL_MS = Math.max(0, Number(process.env.PL_CARD_TTL_MS || 1800000))
+const PL_LIST_LIMIT = 50
+const plListCache = new Map()
+const plCardCache = new Map()
+
+function plDecodeHtml(s) {
+    return String(s || '')
+        .replace(/&#(\d+);/g, (_, c) => String.fromCodePoint(+c))
+        .replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ')
+}
+
+async function plFetchHtml(url) {
+    const response = await fetch(url, {
+        headers: { 'User-Agent': PL_UA, 'Accept-Language': 'ru-RU,ru;q=0.9' },
+        signal: AbortSignal.timeout(30000)
+    })
+    if (!response.ok) throw new Error(`Pornolab HTTP ${response.status}`)
+    return new TextDecoder('windows-1251').decode(Buffer.from(await response.arrayBuffer()))
+}
+
+// Релизы-«картинки» (фотосеты) не воспроизводятся через TorrServer — в списки не берём.
+function plIsPhotoSet(title) {
+    return /(\d+\s*(?:фото|pics|images)|фотосет|\bсэт[а-я]*\b.*фото|только фото)/i.test(title)
+}
+
+function plRowId(chunk) {
+    return (chunk.match(/<tr id="tr-(\d+)"/) || [])[1] || ''
+}
+
+function plRowTitle(chunk) {
+    const raw = (chunk.match(/class="topictitle[^"]*"[^>]*>([\s\S]{5,400}?)<\/a>/) || [])[1] || ''
+    return plDecodeHtml(raw.replace(/<[^>]+>/g, '')).replace(/\s+/g, ' ').trim()
+}
+
+function plRowSize(chunk) {
+    return plDecodeHtml((chunk.match(/([0-9.,]+(?:&nbsp;|\s)+(?:GB|MB|TB|KB))/) || [])[1] || '').replace(/\s+/g, ' ').trim()
+}
+
+function plCardItem(topicId, title, size) {
+    return {
+        id: 'pl-' + topicId,
+        pl_id: +topicId,
+        title,
+        size: size || '',
+        seeds: 0,
+        published_at: '',
+        source_url: `${PL_BASE}/viewtopic.php?t=${topicId}`,
+        magnet: '',
+        type: 'movie'
+    }
+}
+
+function plParseForum(html) {
+    const cards = []
+    for (const chunk of (html.match(/<tr id="tr-\d+"[\s\S]*?<\/tr>/g) || [])) {
+        const id = plRowId(chunk)
+        const title = plRowTitle(chunk)
+        if (!id || !title || /правила|правил\b/i.test(title)) continue
+        if (plIsPhotoSet(title)) continue
+        cards.push(plCardItem(id, title, plRowSize(chunk)))
+        if (cards.length >= PL_LIST_LIMIT) break
+    }
+    return cards
+}
+
+// В f=489 чарты лежат темами: недельные «12.10.2026-1», месячные «Сентябрь / September 2026».
+function plFindChartTopic(html, kind) {
+    for (const chunk of (html.match(/<tr id="tr-\d+"[\s\S]*?<\/tr>/g) || [])) {
+        const id = plRowId(chunk)
+        const title = plRowTitle(chunk)
+        if (!id || !title) continue
+        if (kind === 'week' && /^\d{2}\.\d{2}\.\d{4}-\d/.test(title)) return id
+        if (kind === 'month' && /^[А-Яа-яЁё]+ \/ [A-Za-z]+ \d{4}$/.test(title)) return id
+    }
+    return 0
+}
+
+// Первый пост темы-чарта: группы-разделы (ссылки на viewforum) + пункты
+// «позиция <a viewtopic>название</a> автор (размер)». Режем по заголовкам групп.
+function plParseChart(html) {
+    const start = html.indexOf('post_body" id="p-')
+    const end = start >= 0 ? html.indexOf('post_body-->', start) : -1
+    const body = start >= 0 && end > start ? html.slice(start, end) : html
+
+    const items = []
+    const seen = new Set()
+    const headerRe = /viewforum\.php\?f=\d+" class="postLink">([^<]{2,120})</g
+    let header = ''
+    let positions = []
+    let m
+    while ((m = headerRe.exec(body)) !== null) positions.push({ at: m.index, name: plDecodeHtml(m[1]).trim() })
+    positions.push({ at: body.length, name: '' })
+
+    for (let i = 0; i < positions.length - 1; i++) {
+        const segment = body.slice(positions[i].at, positions[i + 1].at)
+        const itemRe = /viewtopic\.php\?t=(\d+)" class="postLink">([\s\S]{5,500}?)<\/a>([\s\S]{0,300}?post-u">\(([^)]{2,20})\))?/g
+        let im
+        while ((im = itemRe.exec(segment)) !== null) {
+            const id = im[1]
+            if (seen.has(id)) continue
+            const title = plDecodeHtml(im[2].replace(/<[^>]+>/g, '')).replace(/\s+/g, ' ').trim()
+            if (!title || plIsPhotoSet(title)) continue
+            seen.add(id)
+            items.push(plCardItem(id, title, plDecodeHtml(im[4] || '').trim()))
+        }
+    }
+    return items
+}
+
+async function plList(section) {
+    const cached = plListCache.get(section)
+    if (cached && Date.now() - cached.at < PL_LIST_TTL_MS) return cached.payload
+
+    let items = []
+    if (section === 'week' || section === 'month') {
+        const forumHtml = await plFetchHtml(`${PL_BASE}/viewforum.php?f=489`)
+        const topicId = plFindChartTopic(forumHtml, section)
+        if (!topicId) throw new Error('Не нашёл тему чарта (' + (section === 'week' ? 'неделя' : 'месяц') + ') на Pornolab')
+        items = plParseChart(await plFetchHtml(`${PL_BASE}/viewtopic.php?t=${topicId}`))
+    } else {
+        const forumId = section === 'siterips' ? 1876 : 1877
+        items = plParseForum(await plFetchHtml(`${PL_BASE}/viewforum.php?f=${forumId}`))
+    }
+    if (!items.length) throw new Error('Pornolab вернул пустой список')
+    plListCache.set(section, { at: Date.now(), payload: items })
+    return items
+}
+
+/*
+ * bencode: минимальный кодек, чтобы посчитать infohash скачанного .torrent
+ * (sha1 от канонически перекодированного словаря info).
+ */
+function plBencodeDecode(buf, pos = 0) {
+    const c = buf[pos]
+    if (c === 0x64) { // d
+        pos++
+        const dict = {}
+        while (buf[pos] !== 0x65) {
+            const [k, p1] = plBencodeDecode(buf, pos)
+            const [v, p2] = plBencodeDecode(buf, p1)
+            dict[k] = v
+            pos = p2
+        }
+        return [dict, pos + 1]
+    }
+    if (c === 0x6c) { // l
+        pos++
+        const arr = []
+        while (buf[pos] !== 0x65) {
+            const [v, p] = plBencodeDecode(buf, pos)
+            arr.push(v)
+            pos = p
+        }
+        return [arr, pos + 1]
+    }
+    if (c === 0x69) { // i
+        const e = buf.indexOf(0x65, pos)
+        return [BigInt(buf.slice(pos + 1, e).toString()), e + 1]
+    }
+    const colon = buf.indexOf(0x3a, pos)
+    const len = +buf.slice(pos, colon).toString()
+    return [buf.slice(colon + 1, colon + 1 + len), colon + 1 + len]
+}
+
+function plBencodeEncode(value, out = []) {
+    if (Buffer.isBuffer(value)) { out.push(Buffer.byteLength(value) + ':', value); return out }
+    if (typeof value === 'bigint') { out.push('i' + value + 'e'); return out }
+    if (Array.isArray(value)) { out.push('l'); value.forEach(v => plBencodeEncode(v, out)); out.push('e'); return out }
+    out.push('d')
+    for (const key of Object.keys(value).sort()) {
+        plBencodeEncode(Buffer.from(key), out)
+        plBencodeEncode(value[key], out)
+    }
+    out.push('e')
+    return out
+}
+
+function plTorrentMagnet(buf) {
+    const [root] = plBencodeDecode(buf)
+    const info = root && root.info
+    if (!info) return ''
+    const encoded = Buffer.concat(plBencodeEncode(info).map(x => Buffer.isBuffer(x) ? x : Buffer.from(x)))
+    const hash = crypto.createHash('sha1').update(encoded).digest('hex')
+    let magnet = `magnet:?xt=urn:btih:${hash}`
+    const name = info['name.utf-8'] || info.name
+    if (name) magnet += `&dn=${encodeURIComponent(name.toString())}`
+    const announce = root['announce.utf-8'] || root.announce
+    if (announce) magnet += `&tr=${encodeURIComponent(announce.toString())}`
+    return magnet
+}
+
+/*
+ * Лёгкая карточка: постер и описание читаются анонимно (темы видны гостю),
+ * без браузера. Ограничиваем параллелизм, чтобы не долбить Pornolab.
+ */
+const PL_FETCH_CONCURRENCY = 6
+let plFetchActive = 0
+const plFetchQueue = []
+
+async function plWithSlot(run) {
+    if (plFetchActive >= PL_FETCH_CONCURRENCY) {
+        await new Promise(resolve => plFetchQueue.push(resolve))
+    }
+    plFetchActive++
+    try {
+        return await run()
+    } finally {
+        plFetchActive--
+        const next = plFetchQueue.shift()
+        if (next) next()
+    }
+}
+
+// Первый пост темы: от маркера post_body до <!--/post_body--> (ленивый регэксп
+// обрезался на внутреннем <div class="mc-note"> и терял постер/описание).
+// Постер у гостя лежит в <var class="postImg" title="URL">.
+function plParseTopicParts(html) {
+    const pbStart = html.indexOf('post_body" id="p-')
+    const pbEnd = pbStart >= 0 ? html.indexOf('post_body-->', pbStart) : -1
+    const firstPost = pbStart >= 0 && pbEnd > pbStart ? html.slice(pbStart, pbEnd) : html
+    let poster = plDecodeHtml((firstPost.match(/class="postImg[^"]*"[^>]*title="([^"]+)"/i) || [])[1] || '')
+    if (!poster) poster = plDecodeHtml((firstPost.match(/<img[^>]+class="[^"]*postImg[^"]*"[^>]*src="([^"]+)"/i) || [])[1] || '')
+    const desc = plDecodeHtml(firstPost.replace(/^[^>]*>/, '').replace(/<var[\s\S]*?<\/var>/g, ' ').replace(/<img[^>]+>/g, ' ').replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim()
+    return { poster: poster.trim(), overview: desc.slice(0, 700) }
+}
+
+async function plCardLight(topicId) {
+    const key = 'l' + topicId
+    const cached = plCardCache.get(key)
+    if (cached && Date.now() - cached.at < PL_CARD_TTL_MS) return cached.payload
+    const payload = await plWithSlot(async () => {
+        const html = await plFetchHtml(`${PL_BASE}/viewtopic.php?t=${topicId}`)
+        return plParseTopicParts(html)
+    })
+    plCardCache.set(key, { at: Date.now(), payload })
+    return payload
+}
+
+/*
+ * Карточки PL: одна залогиненная вкладка проекта Chrome на origin pornolab.net.
+ * Вкладку не закрываем — она одна и переиспользуется (без утечки вкладок).
+ */
+let plPageCard = null
+let plPagesReady = null
+let plPageChain = Promise.resolve()
+// Pornolab открывает рекламные попандеры из нашей вкладки — прибираем сразу,
+// иначе в проектном Chrome накопятся dynspt/promo-вкладки.
+const PL_AD_URL_RE = /promo\.php|dynspt\.com|go\.pornolab|\/click/
+
+async function plEnsurePage() {
+    if (plPagesReady) return plPagesReady
+    plPagesReady = (async () => {
+        const page = await getBrowserPage()
+        if (!page.context().__plAdGuard) {
+            page.context().__plAdGuard = true
+            page.context().on('page', popped => {
+                popped.url().match(PL_AD_URL_RE) ? popped.close().catch(() => {}) : null
+            })
+        }
+        plPageCard = await page.context().newPage()
+        await plPageCard.goto(PL_BASE + '/index.php', { waitUntil: 'domcontentloaded', timeout: 45000 })
+        await plPageCard.waitForTimeout(700)
+        const loggedIn = await plPageCard.evaluate(() => (typeof LOGGED_IN !== 'undefined') ? LOGGED_IN : 0).catch(() => 0)
+        if (!loggedIn) throw new Error('Pornolab: нет авторизации в проектном Chrome — залогиньтесь в его окне')
+    })().catch(e => { plPagesReady = null; throw e })
+    return plPagesReady
+}
+
+async function plCard(topicId) {
+    const cached = plCardCache.get(topicId)
+    if (cached && Date.now() - cached.at < PL_CARD_TTL_MS) return cached.payload
+
+    await plEnsurePage()
+    const page = plPageCard
+    const run = plPageChain.then(async () => {
+        const data = await page.evaluate(async (t) => {
+            const r1 = await fetch(`/forum/viewtopic.php?t=${t}`, { credentials: 'include' })
+            const html = new TextDecoder('windows-1251').decode(await r1.arrayBuffer())
+            let torrentB64 = ''
+            try {
+                document.cookie = `bb_dl=${t}; path=/forum/`
+                const r2 = await fetch(`/forum/dl.php?t=${t}`, { credentials: 'include' })
+                if (r2.ok) {
+                    const bytes = new Uint8Array(await r2.arrayBuffer())
+                    let bin = ''
+                    bytes.forEach(b => { bin += String.fromCharCode(b) })
+                    torrentB64 = btoa(bin)
+                }
+            } catch (e) { /* магнит посчитать не выйдет — вернём пустой */ }
+            return { html, torrentB64 }
+        }, topicId)
+
+        const html = data.html
+        const payload = {
+            pl_id: +topicId,
+            magnet: data.torrentB64 ? plTorrentMagnet(Buffer.from(data.torrentB64, 'base64')) : '',
+            ...plParseTopicParts(html)
+        }
+        plCardCache.set(topicId, { at: Date.now(), payload })
+        return payload
+    })
+    plPageChain = run.catch(() => '')
+    return run
 }
 
 function pageOf(items, page, limit) {
@@ -791,6 +1106,32 @@ const server = http.createServer(async (req, res) => {
         }
     }
 
+    if (req.method === 'GET' && url.pathname === '/pl/v1/list') {
+        const section = String(url.searchParams.get('section') || 'week')
+        if (!['week', 'month', 'siterips', 'siterips_ru'].includes(section)) return sendJson(res, 400, { ok: false, message: 'Неизвестный раздел PL' })
+        const limit = Math.min(50, Math.max(10, Number(url.searchParams.get('limit') || 50) || 50))
+        const page = Math.max(1, Number(url.searchParams.get('page') || 1) || 1)
+        try {
+            const items = await plList(section)
+            return sendJson(res, 200, proxyPosters(req.headers.host, pageOf(items, page, limit)))
+        } catch (error) {
+            return sendJson(res, 502, { ok: false, message: error.message || 'Не удалось получить раздел Pornolab' })
+        }
+    }
+
+    if (req.method === 'GET' && url.pathname === '/pl/v1/card') {
+        const topicId = String(url.searchParams.get('t') || '').replace(/\D/g, '')
+        if (!topicId) return sendJson(res, 400, { ok: false, message: 'Нет id темы' })
+        const light = url.searchParams.get('light') === '1'
+        try {
+            const card = light ? await plCardLight(topicId) : await plCard(topicId)
+            card.poster = card.poster ? proxyImageUrl(req.headers.host, card.poster) : ''
+            return sendJson(res, 200, card)
+        } catch (error) {
+            return sendJson(res, 502, { ok: false, message: error.message || 'Не удалось получить тему Pornolab' })
+        }
+    }
+
     if (req.method === 'GET' && url.pathname === '/nm/v1/list') {
         const section = String(url.searchParams.get('section') || 'movies_new')
         if (!NM_SECTIONS[section]) return sendJson(res, 400, { ok: false, message: 'Неизвестный раздел NM' })
@@ -808,8 +1149,8 @@ const server = http.createServer(async (req, res) => {
         return handleImage(res, url.searchParams.get('url'))
     }
 
-    if (req.method === 'GET' && (url.pathname === '/plugin.js' || url.pathname === '/nm.js' || url.pathname === '/rt.js' || url.pathname === '/mock-results.json')) {
-        const fileMap = { '/plugin.js': 'plugin.js', '/nm.js': 'nm.js', '/rt.js': 'rt.js', '/mock-results.json': 'mock-results.json' }
+    if (req.method === 'GET' && (url.pathname === '/plugin.js' || url.pathname === '/nm.js' || url.pathname === '/rt.js' || url.pathname === '/pl.js' || url.pathname === '/mock-results.json')) {
+        const fileMap = { '/plugin.js': 'plugin.js', '/nm.js': 'nm.js', '/rt.js': 'rt.js', '/pl.js': 'pl.js', '/mock-results.json': 'mock-results.json' }
         const file = path.join(__dirname, fileMap[url.pathname])
         try {
             const body = fs.readFileSync(file)

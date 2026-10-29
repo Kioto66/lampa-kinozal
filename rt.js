@@ -92,6 +92,25 @@
             }, function () { reject(new Error('Не удалось получить данные темы')) })
         })
     }
+    /*
+     * Карточка для догрузки постеров в сетке: свой Reguest на вызов —
+     * общий инстанс ставит запросы в очередь, и догрузка растягивалась на минуты.
+     */
+    Provider.prototype.cardGrid = function (rtId) {
+        var self = this
+        return new Promise(function (resolve, reject) {
+            var network = new Lampa.Reguest()
+            network.timeout(45000)
+            var url = self.baseUrl + '/rt/v1/card?t=' + encodeURIComponent(rtId)
+            network.silent(url, function (response) {
+                network.clear()
+                try { resolve(typeof response === 'string' ? JSON.parse(response) : response) } catch (e) { reject(new Error('Неверный JSON карточки')) }
+            }, function () {
+                network.clear()
+                reject(new Error('Не удалось получить постер'))
+            })
+        })
+    }
     Provider.prototype.clear = function () { this.network.clear() }
 
     function makeCardData(item) {
@@ -194,7 +213,32 @@
     function MakerScreen(object) {
         var provider = new Provider(field('proxy_url', '') || DEFAULT_PROXY_URL)
         var section = String(object.section || field('section', 'movies_new'))
-        var posterBudget = 0
+
+        // Ленивая догрузка постеров: 3 параллельные цепочки лёгких запросов.
+        var chains = [Promise.resolve(), Promise.resolve(), Promise.resolve()]
+        var chainIdx = 0
+        var posterBudget = 60
+
+        function setPoster(card, data, poster) {
+            data.poster = poster
+            data.img = poster
+            try {
+                // card.render(true) — сырой DOM-элемент: jQuery-подобного .find у него
+                // нет, а карточка при 'visible' перетирает src из data — обновляем
+                // и данные, и сам <img>.
+                var el = card.render(true)
+                var img = el.querySelector ? el.querySelector('.card__img') : null
+                if (img) img.src = poster
+                else $(el).find('.card__img').attr('src', poster)
+            } catch (e) { }
+            setTimeout(function () {
+                try {
+                    var el2 = card.render(true)
+                    var img2 = el2.querySelector ? el2.querySelector('.card__img') : null
+                    if (img2 && img2.src !== poster) img2.src = poster
+                } catch (e) { }
+            }, 2500)
+        }
 
         var comp = Lampa.Maker.make('Category', { title: 'RT', page: 1 })
 
@@ -220,24 +264,14 @@
                     onlyEnter: function () { openCard(data) }
                 })
                 // Постеры лежат внутри тем — догружаем лениво, до 60 карточек
-                if (data.rt_id && !data.poster && posterBudget < 60) {
-                    posterBudget++
-                    provider.card(data.rt_id).then(function (info) {
-                        if (info.poster) {
-                            data.poster = info.poster
-                            data.img = info.poster
-                            // card.img мог ещё не существовать в момент onInstance —
-                            // ищем картинку через render, с повтором на всякий случай
-                            var setImg = function () {
-                                try {
-                                    var img = (card.img && card.img.length) ? card.img : card.render(true).find('.card__img')
-                                    if (img && img.length) img.attr('src', info.poster)
-                                } catch (e) { }
-                            }
-                            setImg()
-                            setTimeout(setImg, 3000)
-                        }
-                        if (info.overview) data.overview = info.overview
+                if (data.rt_id && !data.poster && posterBudget > 0) {
+                    posterBudget--
+                    var idx = chainIdx++ % chains.length
+                    chains[idx] = chains[idx].then(function () {
+                        return provider.cardGrid(data.rt_id).then(function (info) {
+                            if (info.poster) setPoster(card, data, info.poster)
+                            if (info.overview && !data.overview) data.overview = info.overview
+                        })
                     }).catch(function () { })
                 }
             }
@@ -527,18 +561,20 @@
                 body.append('<p style="color:#fff;opacity:.85;margin:1em 1.5em">Данные раздачи не сохранились после перезапуска LAMPA. Нажмите влево, чтобы открыть главное меню, или вправо — чтобы выбрать раздел RT.</p>')
             }
 
-            function addButton(name, callback) {
-                var btn = $('<div class="settings-param selector"><div class="settings-param-name">' + escapeHtml(name) + '</div></div>')
-                btn.on('hover:focus', function () {
-                    last = btn
-                    scroll.update(btn)
-                })
-                btn.on('hover:enter', callback)
-                body.append(btn)
+            function addWatchStyle() {
+                if (window.lampa_rt_watch_style) return
+                window.lampa_rt_watch_style = true
+                $('<style>').text('.rt-watch{background:#3d7dd8;color:#fff;opacity:.8}.rt-watch.focus{background:#fff;color:#000;opacity:1}').appendTo('head')
             }
 
             if (item.rt_id) {
-                addButton('Смотреть (TorrServer)', function () {
+                addWatchStyle()
+                var watch = $('<div class="simple-button selector rt-watch" style="margin:1em 1.5em;display:inline-flex">&#9654; Смотреть (TorrServer)</div>')
+                watch.on('hover:focus', function () {
+                    last = watch
+                    scroll.update(watch)
+                })
+                watch.on('hover:enter', function () {
                     if (magnet) return watch(magnet)
                     notify('Получаю данные раздачи с RuTracker…')
                     providerCard(function (info) {
@@ -546,6 +582,7 @@
                         else notify('Magnet не найден в теме RuTracker', true)
                     }, function (message) { notify(message, true) })
                 })
+                body.append(watch)
             }
         }
 
