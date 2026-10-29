@@ -138,6 +138,19 @@ async function fetchPublicTop(category, period) {
     return { url, results: parsed }
 }
 
+// Стартовый свип вкладок: прошлая сессия сервера оставляет дубли.
+// Кинозал — оставляем одну (первую), Pornolab — закрываем все (вкладка
+// создаётся лениво при первом полном запросе карточки и сама чистит старьё).
+// Возвращаем выжившую вкладку Кинозала.
+function sweepStaleTabs(context) {
+    const kinozalPages = context.pages().filter(p => /kinozal\.(me|tv|guru)/.test(p.url()))
+    for (let i = 1; i < kinozalPages.length; i++) kinozalPages[i].close().catch(() => {})
+    for (const p of context.pages()) {
+        if (/pornolab\.net/.test(p.url())) p.close().catch(() => {})
+    }
+    return kinozalPages[0] || null
+}
+
 async function getBrowserPage() {
     if (!browserContextPromise) {
         browserContextPromise = (async () => {
@@ -170,7 +183,9 @@ async function getBrowserPage() {
     if (!browserPagePromise) {
         browserPagePromise = (async () => {
             const pages = context.pages()
-            return pages[0] || context.newPage()
+            // Вкладка Кинозала — по URL, а не pages[0]: в pages могут быть
+            // служебные страницы вроде chrome://omnibox-popup
+            return sweepStaleTabs(context) || pages[0] || context.newPage()
         })()
     }
     return browserPagePromise
@@ -459,6 +474,10 @@ async function rtEnsurePages() {
     rtPagesReady = (async () => {
         const page = await getBrowserPage()
         const ctx = page.context()
+        // Прошлые запуски сервера оставляли свои вкладки Рутрекера — подчищаем
+        for (const p of ctx.pages()) {
+            if (/rutracker\.org/.test(p.url())) await p.close().catch(() => {})
+        }
         rtPageList = await ctx.newPage()
         // 3 воркера: на 60 карточек два не успевали — хвост падал по таймауту
         for (let i = 0; i < 3; i++) rtPagesCard.push(await ctx.newPage())
@@ -856,6 +875,10 @@ async function plEnsurePage() {
     if (plPagesReady) return plPagesReady
     plPagesReady = (async () => {
         const page = await getBrowserPage()
+        // Прошлые запуски сервера оставляли свои вкладки Pornolab — подчищаем
+        for (const p of page.context().pages()) {
+            if (/pornolab\.net/.test(p.url())) await p.close().catch(() => {})
+        }
         if (!page.context().__plAdGuard) {
             page.context().__plAdGuard = true
             page.context().on('page', popped => {

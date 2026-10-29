@@ -6,6 +6,7 @@
 
     var NS = 'lampa_nm_'
     var COMPONENT = 'lampa_nm_list'
+    var NAME = 'NNM-Club'
     var DEFAULT_PROXY_URL = 'http://192.168.11.71:8787'
     var PAGE_LIMIT = 60
 
@@ -170,13 +171,13 @@
     }
 
     function pushScreen(section) {
-        Lampa.Activity.push({ url: '', title: 'NM', component: COMPONENT, page: 1, section: section })
+        Lampa.Activity.push({ url: '', title: NAME, component: COMPONENT, page: 1, section: section })
     }
 
     function openSectionMenu(current) {
         var currentTitle = (SECTIONS.filter(function (s) { return s.value === current })[0] || SECTIONS[0]).title
         Lampa.Select.show({
-            title: 'NM — разделы',
+            title: NAME + ' — разделы',
             items: SECTIONS.map(function (s) {
                 return { title: s.title + (s.value === current ? ' · текущий' : ''), value: s.value }
             }),
@@ -196,7 +197,7 @@
         var provider = new Provider(field('proxy_url', '') || DEFAULT_PROXY_URL)
         var section = String(object.section || field('section', 'movies_new'))
 
-        var comp = Lampa.Maker.make('Category', { title: 'NM', page: 1 })
+        var comp = Lampa.Maker.make('Category', { title: NAME, page: 1 })
 
         comp.use({
             onCreate: function () {
@@ -275,7 +276,7 @@
         }
 
         function empty() {
-            var hint = $('<div style="padding:2em;color:#fff;opacity:.7">Ничего не получено. Проверьте адрес локального API в настройках плагина NM.</div>')
+            var hint = $('<div style="padding:2em;color:#fff;opacity:.7">Ничего не получено. Проверьте адрес локального API в настройках плагина ' + NAME + '.</div>')
             scroll.append(hint)
             $(html).append(scroll.render(true))
             this.activity.loader(false)
@@ -444,7 +445,7 @@
 
         function watchStart(magnet) {
             var base = torrBase()
-            if (!base) return notify('Не указан адрес TorrServer (настройки LAMPA или плагина NM)', true)
+            if (!base) return notify('Не указан адрес TorrServer (настройки LAMPA или плагина ' + NAME + ')', true)
             if (!Lampa.Player || !Lampa.Player.play) return notify('Плеер LAMPA недоступен в этой версии', true)
 
             notify('Добавляю раздачу в TorrServer…')
@@ -598,7 +599,7 @@
                 Lampa.Controller.toggle('content')
             } catch (e) {
                 logError('startController', e)
-                Lampa.Noty.show('NM detail error: ' + e.message, true)
+                Lampa.Noty.show(NAME + ' detail error: ' + e.message, true)
             }
         }
 
@@ -623,7 +624,7 @@
 
     function registerSettings() {
         if (!Lampa.SettingsApi || !Lampa.SettingsApi.addComponent || !Lampa.SettingsApi.addParam) return
-        Lampa.SettingsApi.addComponent({ component: NS + 'settings', name: 'NM — NNM-Club', icon: '' })
+        Lampa.SettingsApi.addComponent({ component: NS + 'settings', name: NAME, icon: '' })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'section', type: 'select', values: { movies_new: 'Новинки кино', movies_foreign: 'Зарубежное кино (вкл. HD, UHD)', series_ru: 'Наши сериалы', series_foreign: 'Зарубежные сериалы', doc: 'Документалки и ТВ-бренды', theater: 'Театр и МузВидео' }, default: 'movies_new' }, field: { name: 'Раздел' } })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'proxy_url', type: 'input', values: '', default: DEFAULT_PROXY_URL }, field: { name: 'URL локального API', description: 'По умолчанию: ' + DEFAULT_PROXY_URL } })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'player', type: 'select', values: { auto: 'Авто (MKV/торренты — Android-плеер)', lampa: 'Всегда внутренний плеер LAMPA', android: 'Всегда Android-плеер' }, default: 'auto' }, field: { name: 'Плеер', description: 'Android-плеер корректно читает MKV с DTS/TrueHD' } })
@@ -632,17 +633,19 @@
     }
 
     function addMenuItem() {
-        var btn = $('<li class="menu__item selector"><div class="menu__ico"></div><div class="menu__text">NM</div></li>')
+        var icon = '<svg><use xlink:href="#sprite-hd"></use></svg>'
+        if (Lampa.Menu && Lampa.Menu.addButton) {
+            Lampa.Menu.addButton(icon, NAME, function () {
+                Lampa.Activity.push({ url: '', title: NAME, component: COMPONENT, page: 1 })
+            })
+            return
+        }
+        var btn = $('<li class="menu__item selector"><div class="menu__ico">' + icon + '</div><div class="menu__text">' + NAME + '</div></li>')
         btn.on('hover:enter', function () {
-            Lampa.Activity.push({ url: '', title: 'NM', component: COMPONENT, page: 1 })
+            Lampa.Activity.push({ url: '', title: NAME, component: COMPONENT, page: 1 })
         })
         var menu = $('.menu .menu__list').eq(0)
         if (menu && menu.length) menu.append(btn)
-        else if (Lampa.Menu && Lampa.Menu.addButton) {
-            Lampa.Menu.addButton('', 'NM', function () {
-                Lampa.Activity.push({ url: '', title: 'NM', component: COMPONENT, page: 1 })
-            })
-        }
     }
 
     function init() {

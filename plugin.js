@@ -665,14 +665,16 @@
     }
 
     function addMenuItem() {
-        var btn = $('<li class="menu__item selector"><div class="menu__ico"></div><div class="menu__text">Кинозал</div></li>')
-        btn.on('hover:enter', function () {
-            Lampa.Activity.push({ url: '', title: 'Кинозал', component: COMPONENT, page: 1 })
-        })
+        var icon = '<svg><use xlink:href="#sprite-movie"></use></svg>'
         var menu = $('.menu .menu__list').eq(0)
-        if (menu && menu.length) menu.append(btn)
-        else if (Lampa.Menu && Lampa.Menu.addButton) {
-            Lampa.Menu.addButton('', 'Кинозал', function () {
+        if (menu && menu.length) {
+            var btn = $('<li class="menu__item selector"><div class="menu__ico">' + icon + '</div><div class="menu__text">Кинозал</div></li>')
+            btn.on('hover:enter', function () {
+                Lampa.Activity.push({ url: '', title: 'Кинозал', component: COMPONENT, page: 1 })
+            })
+            menu.append(btn)
+        } else if (Lampa.Menu && Lampa.Menu.addButton) {
+            Lampa.Menu.addButton(icon, 'Кинозал', function () {
                 Lampa.Activity.push({ url: '', title: 'Кинозал', component: COMPONENT, page: 1 })
             })
         }

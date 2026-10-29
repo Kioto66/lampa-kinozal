@@ -6,6 +6,7 @@
 
     var NS = 'lampa_pl_'
     var COMPONENT = 'lampa_pl_list'
+    var NAME = 'Pornolab'
     var DEFAULT_PROXY_URL = 'http://192.168.11.71:8787'
     var PAGE_LIMIT = 50
 
@@ -127,12 +128,12 @@
     }
 
     function pushScreen(section) {
-        Lampa.Activity.push({ url: '', title: 'PL', component: COMPONENT, page: 1, section: section })
+        Lampa.Activity.push({ url: '', title: NAME, component: COMPONENT, page: 1, section: section })
     }
 
     function openSectionMenu(current) {
         Lampa.Select.show({
-            title: 'PL — разделы',
+            title: NAME + ' — разделы',
             items: SECTIONS.map(function (s) {
                 return { title: s.title + (s.value === current ? ' · текущий' : ''), value: s.value }
             }),
@@ -177,7 +178,7 @@
             }, 2500)
         }
 
-        var comp = Lampa.Maker.make('Category', { title: 'PL', page: 1 })
+        var comp = Lampa.Maker.make('Category', { title: NAME, page: 1 })
 
         comp.use({
             onCreate: function () {
@@ -262,7 +263,7 @@
         }
 
         function empty() {
-            var hint = $('<div style="padding:2em;color:#fff;opacity:.7">Ничего не получено. Проверьте адрес локального API в настройках плагина PL.</div>')
+            var hint = $('<div style="padding:2em;color:#fff;opacity:.7">Ничего не получено. Проверьте адрес локального API в настройках плагина ' + NAME + '.</div>')
             scroll.append(hint)
             $(html).append(scroll.render(true))
             this.activity.loader(false)
@@ -425,7 +426,7 @@
 
         function watch(magnet) {
             var base = torrBase()
-            if (!base) return notify('Не указан адрес TorrServer (настройки LAMPA или плагина PL)', true)
+            if (!base) return notify('Не указан адрес TorrServer (настройки LAMPA или плагина ' + NAME + ')', true)
             if (!Lampa.Player || !Lampa.Player.play) return notify('Плеер LAMPA недоступен в этой версии', true)
 
             notify('Добавляю раздачу в TorrServer…')
@@ -495,7 +496,7 @@
             if (item.overview) body.append('<p style="color:#fff;opacity:.85;line-height:1.45;margin:.5em 1.5em;clear:left">' + escapeHtml(item.overview) + '</p>')
 
             if (!item.pl_id) {
-                body.append('<p style="color:#fff;opacity:.85;margin:1em 1.5em">Данные раздачи не сохранились после перезапуска LAMPA. Нажмите влево, чтобы открыть главное меню, или вправо — чтобы выбрать раздел PL.</p>')
+                body.append('<p style="color:#fff;opacity:.85;margin:1em 1.5em">Данные раздачи не сохранились после перезапуска LAMPA. Нажмите влево, чтобы открыть главное меню, или вправо — чтобы выбрать раздел ' + NAME + '.</p>')
             }
 
             function addWatchStyle() {
@@ -584,7 +585,7 @@
                 Lampa.Controller.toggle('content')
             } catch (e) {
                 logError('startController', e)
-                Lampa.Noty.show('PL detail error: ' + e.message, true)
+                Lampa.Noty.show(NAME + ' detail error: ' + e.message, true)
             }
         }
 
@@ -603,7 +604,7 @@
 
     function registerSettings() {
         if (!Lampa.SettingsApi || !Lampa.SettingsApi.addComponent || !Lampa.SettingsApi.addParam) return
-        Lampa.SettingsApi.addComponent({ component: NS + 'settings', name: 'PL — Pornolab', icon: '' })
+        Lampa.SettingsApi.addComponent({ component: NS + 'settings', name: NAME, icon: '' })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'section', type: 'select', values: { week: 'Популярное за неделю', month: 'Популярное за месяц', siterips: 'Сайтрипы 2026', siterips_ru: 'Сайтрипы с русскими актрисами 2026' }, default: 'week' }, field: { name: 'Раздел' } })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'proxy_url', type: 'input', values: '', default: DEFAULT_PROXY_URL }, field: { name: 'URL локального API', description: 'По умолчанию: ' + DEFAULT_PROXY_URL } })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'player', type: 'select', values: { auto: 'Авто (MKV/торренты — Android-плеер)', lampa: 'Всегда внутренний плеер LAMPA', android: 'Всегда Android-плеер' }, default: 'auto' }, field: { name: 'Плеер', description: 'Android-плеер корректно читает MKV с DTS/TrueHD' } })
@@ -611,17 +612,19 @@
     }
 
     function addMenuItem() {
-        var btn = $('<li class="menu__item selector"><div class="menu__ico"></div><div class="menu__text">PL</div></li>')
+        var icon = '<svg><use xlink:href="#sprite-adult"></use></svg>'
+        if (Lampa.Menu && Lampa.Menu.addButton) {
+            Lampa.Menu.addButton(icon, NAME, function () {
+                Lampa.Activity.push({ url: '', title: NAME, component: COMPONENT, page: 1 })
+            })
+            return
+        }
+        var btn = $('<li class="menu__item selector"><div class="menu__ico">' + icon + '</div><div class="menu__text">' + NAME + '</div></li>')
         btn.on('hover:enter', function () {
-            Lampa.Activity.push({ url: '', title: 'PL', component: COMPONENT, page: 1 })
+            Lampa.Activity.push({ url: '', title: NAME, component: COMPONENT, page: 1 })
         })
         var menu = $('.menu .menu__list').eq(0)
         if (menu && menu.length) menu.append(btn)
-        else if (Lampa.Menu && Lampa.Menu.addButton) {
-            Lampa.Menu.addButton('', 'PL', function () {
-                Lampa.Activity.push({ url: '', title: 'PL', component: COMPONENT, page: 1 })
-            })
-        }
     }
 
     function init() {
