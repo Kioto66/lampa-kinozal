@@ -194,6 +194,7 @@
     function MakerScreen(object) {
         var provider = new Provider(field('proxy_url', '') || DEFAULT_PROXY_URL)
         var section = String(object.section || field('section', 'movies_new'))
+        var posterBudget = 0
 
         var comp = Lampa.Maker.make('Category', { title: 'RT', page: 1 })
 
@@ -218,8 +219,9 @@
                 card.use({
                     onlyEnter: function () { openCard(data) }
                 })
-                // Постеры лежат внутри тем — догружаем лениво
-                if (data.rt_id && !data.poster) {
+                // Постеры лежат внутри тем — догружаем лениво, первые 30 карточек
+                if (data.rt_id && !data.poster && posterBudget < 30) {
+                    posterBudget++
                     provider.card(data.rt_id).then(function (info) {
                         if (info.poster) {
                             data.poster = info.poster

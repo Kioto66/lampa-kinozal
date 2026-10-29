@@ -434,7 +434,7 @@ const RT_SECTIONS = Object.freeze({
     theater: [511]
 })
 const RT_LIST_TTL_MS = Math.max(0, Number(process.env.RT_LIST_TTL_MS || 180000))
-const RT_CARD_TTL_MS = Math.max(0, Number(process.env.RT_CARD_TTL_MS || 600000))
+const RT_CARD_TTL_MS = Math.max(0, Number(process.env.RT_CARD_TTL_MS || 1800000))
 const rtListCache = new Map()
 const rtCardCache = new Map()
 
@@ -444,15 +444,41 @@ function rtDecodeHtml(s) {
         .replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ')
 }
 
-async function rtFetchHtml(url) {
-    // общий браузер и очередь с кинозальной читалкой
-    const page = await getBrowserPage()
-    const run = browserQueue.then(async () => {
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 })
-        await page.waitForTimeout(900)
-        return page.content()
-    })
-    browserQueue = run.catch(() => '')
+/*
+ * RT-страницы: отдельные вкладки проекта Chrome — списки разделов не ждут
+ * очередь карточек, карточки качаются двумя параллельными потоками.
+ */
+let rtPageList = null
+const rtPagesCard = []
+let rtCardPageIdx = 0
+const rtPageChains = new Map()
+let rtPagesReady = null
+
+async function rtEnsurePages() {
+    if (rtPagesReady) return rtPagesReady
+    rtPagesReady = (async () => {
+        const page = await getBrowserPage()
+        const ctx = page.context()
+        rtPageList = await ctx.newPage()
+        for (let i = 0; i < 2; i++) rtPagesCard.push(await ctx.newPage())
+    })().catch(e => { rtPagesReady = null; throw e })
+    return rtPagesReady
+}
+
+async function rtNavigate(page, url) {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 })
+    await page.waitForTimeout(700)
+    const html = await page.content()
+    if (/Just a moment/i.test(html)) throw new Error('RuTracker просит проверку Cloudflare — открой окно проекта Chrome и пройди её вручную')
+    return html
+}
+
+async function rtFetchHtml(url, isCard) {
+    await rtEnsurePages()
+    const page = isCard ? rtPagesCard[rtCardPageIdx++ % rtPagesCard.length] : rtPageList
+    const prev = rtPageChains.get(page) || Promise.resolve()
+    const run = prev.then(() => rtNavigate(page, url))
+    rtPageChains.set(page, run.catch(() => ''))
     return run
 }
 
@@ -528,7 +554,7 @@ async function rtCard(topicId) {
     const cached = rtCardCache.get(topicId)
     if (cached && Date.now() - cached.at < RT_CARD_TTL_MS) return cached.payload
 
-    const html = await rtFetchHtml(`${RT_BASE}/forum/viewtopic.php?t=${topicId}`)
+    const html = await rtFetchHtml(`${RT_BASE}/forum/viewtopic.php?t=${topicId}`, true)
     if (/Just a moment/i.test(html)) throw new Error('RuTracker показал проверку Cloudflare — открой окно проекта Chrome и пройди её вручную')
     const parsed = rtParseTopic(html)
     const payload = Object.assign({ rt_id: topicId }, parsed)
