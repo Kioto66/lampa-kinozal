@@ -14,7 +14,11 @@
         { value: 'week', title: 'Популярное за неделю' },
         { value: 'month', title: 'Популярное за месяц' },
         { value: 'siterips', title: 'Сайтрипы 2026' },
-        { value: 'siterips_ru', title: 'Сайтрипы с русскими актрисами 2026' }
+        { value: 'siterips_hd', title: 'Сайтрипы с русскими актрисами (HD)' },
+        { value: 'siterips_ru', title: 'Сайтрипы с русскими актрисами' },
+        { value: 'amateur_ru', title: 'Русское любительское видео' },
+        { value: 'gangbang', title: 'Гэнг-бэнг' },
+        { value: 'fisting', title: 'Фистинг и дилдо' }
     ]
 
     function field(name, fallback) {
@@ -712,7 +716,7 @@
     function registerSettings() {
         if (!Lampa.SettingsApi || !Lampa.SettingsApi.addComponent || !Lampa.SettingsApi.addParam) return
         Lampa.SettingsApi.addComponent({ component: NS + 'settings', name: NAME, icon: '' })
-        Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'section', type: 'select', values: { week: 'Популярное за неделю', month: 'Популярное за месяц', siterips: 'Сайтрипы 2026', siterips_ru: 'Сайтрипы с русскими актрисами 2026' }, default: 'week' }, field: { name: 'Раздел' } })
+        Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'section', type: 'select', values: { week: 'Популярное за неделю', month: 'Популярное за месяц', siterips: 'Сайтрипы 2026', siterips_hd: 'Сайтрипы с русскими актрисами (HD)', siterips_ru: 'Сайтрипы с русскими актрисами', amateur_ru: 'Русское любительское видео', gangbang: 'Гэнг-бэнг', fisting: 'Фистинг и дилдо' }, default: 'week' }, field: { name: 'Раздел' } })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'proxy_url', type: 'input', values: '', default: DEFAULT_PROXY_URL }, field: { name: 'URL локального API', description: 'По умолчанию: ' + DEFAULT_PROXY_URL } })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'player', type: 'select', values: { auto: 'Авто (MKV/торренты — Android-плеер)', lampa: 'Всегда внутренний плеер LAMPA', android: 'Всегда Android-плеер' }, default: 'auto' }, field: { name: 'Плеер', description: 'Android-плеер корректно читает MKV с DTS/TrueHD' } })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'torr_url', type: 'input', values: '', default: 'http://127.0.0.1:8090' }, field: { name: 'TorrServer', description: 'Если не задан в настройках LAMPA' } })

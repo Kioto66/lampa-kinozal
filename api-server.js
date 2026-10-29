@@ -630,6 +630,17 @@ const PL_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHT
 const PL_LIST_TTL_MS = Math.max(0, Number(process.env.PL_LIST_TTL_MS || 300000))
 const PL_CARD_TTL_MS = Math.max(0, Number(process.env.PL_CARD_TTL_MS || 1800000))
 const PL_LIST_LIMIT = 50
+// Разделы-форумы: списки читаются залогиненной вкладкой — там видны сиды,
+// раздачи с меньшим числом сидов не выводятся
+const PL_MIN_SEEDS = Math.max(0, Number(process.env.PL_MIN_SEEDS || 30))
+const PL_FORUMS = {
+    siterips: { f: 1876, title: 'Сайтрипы 2026' },
+    siterips_hd: { f: 1878, title: 'Сайтрипы с русскими актрисами 2026 (HD)' },
+    siterips_ru: { f: 1877, title: 'Сайтрипы с русскими актрисами 2026' },
+    amateur_ru: { f: 1676, title: 'Русское любительское видео' },
+    gangbang: { f: 1859, title: 'Гэнг-бэнг' },
+    fisting: { f: 1734, title: 'Фистинг и дилдо' }
+}
 const plListCache = new Map()
 const plCardCache = new Map()
 
@@ -658,7 +669,8 @@ function plRowId(chunk) {
 }
 
 function plRowTitle(chunk) {
-    const raw = (chunk.match(/class="topictitle[^"]*"[^>]*>([\s\S]{5,400}?)<\/a>/) || [])[1] || ''
+    // Гостевая разметка: class="topictitle tt-text", залогиненная: class="torTopic bold tt-text"
+    const raw = (chunk.match(/class="[^"]*\btt-text\b[^"]*"[^>]*>([\s\S]{5,400}?)<\/a>/) || [])[1] || ''
     return plDecodeHtml(raw.replace(/<[^>]+>/g, '')).replace(/\s+/g, ' ').trim()
 }
 
@@ -680,14 +692,36 @@ function plCardItem(topicId, title, size) {
     }
 }
 
+function plCardItem(topicId, title, size, seeds) {
+    return {
+        id: 'pl-' + topicId,
+        pl_id: +topicId,
+        title,
+        size: size || '',
+        seeds: Number(seeds) || 0,
+        published_at: '',
+        source_url: `${PL_BASE}/viewtopic.php?t=${topicId}`,
+        magnet: '',
+        type: 'movie'
+    }
+}
+
 function plParseForum(html) {
     const cards = []
     for (const chunk of (html.match(/<tr id="tr-\d+"[\s\S]*?<\/tr>/g) || [])) {
         const id = plRowId(chunk)
         const title = plRowTitle(chunk)
-        if (!id || !title || /правила|правил\b/i.test(title)) continue
+        if (!id || !title || /правила|правил\b|хранител/i.test(title)) continue
+        if (/folder_announce\.gif/.test(chunk)) continue // закрепы-объявления
         if (plIsPhotoSet(title)) continue
-        cards.push(plCardItem(id, title, plRowSize(chunk)))
+        // Сиды видны только под логином; закрепы-объявления их не имеют
+        const seeds = (chunk.match(/class="seedmed"[^>]*>(?:<b>)?(\d+)/i) || [])[1] || ''
+        const leech = (chunk.match(/class="leechmed"[^>]*>(?:<b>)?(\d+)/i) || [])[1] || ''
+        if (seeds === '') continue
+        if (Number(seeds) < PL_MIN_SEEDS) continue
+        const card = plCardItem(id, title, plRowSize(chunk), seeds)
+        card.leech = Number(leech) || 0
+        cards.push(card)
         if (cards.length >= PL_LIST_LIMIT) break
     }
     return cards
@@ -748,10 +782,12 @@ async function plList(section) {
         if (!topicId) throw new Error('Не нашёл тему чарта (' + (section === 'week' ? 'неделя' : 'месяц') + ') на Pornolab')
         items = plParseChart(await plFetchHtml(`${PL_BASE}/viewtopic.php?t=${topicId}`))
     } else {
-        const forumId = section === 'siterips' ? 1876 : 1877
-        items = plParseForum(await plFetchHtml(`${PL_BASE}/viewforum.php?f=${forumId}`))
+        const forum = PL_FORUMS[section]
+        if (!forum) throw new Error('Неизвестный раздел PL: ' + section)
+        // Список через залогиненную вкладку: только там видны сиды для фильтра
+        items = plParseForum(await plFetchLogged(`${PL_BASE}/viewforum.php?f=${forum.f}`))
     }
-    if (!items.length) throw new Error('Pornolab вернул пустой список')
+    if (!items.length) throw new Error('Pornolab вернул пустой список (возможно, всё ниже ' + PL_MIN_SEEDS + ' сидов)')
     plListCache.set(section, { at: Date.now(), payload: items })
     return items
 }
@@ -867,12 +903,32 @@ async function plCardLight(topicId) {
 }
 
 /*
- * Карточки PL: одна залогиненная вкладка проекта Chrome на origin pornolab.net.
- * Вкладку не закрываем — она одна и переиспользуется (без утечки вкладок).
+ * Карточки PL: залогиненные вкладки проекта Chrome на origin pornolab.net —
+ * одна для списков форумов (сид-фильтр), одна для карточек/магнитов.
+ * Вкладки не закрываем — переиспользуются (без утечки вкладок).
  */
 let plPageCard = null
+let plPageList = null
 let plPagesReady = null
 let plPageChain = Promise.resolve()
+let plListChain = Promise.resolve()
+
+// Списки форумов: быстрый fetch внутри залогиненной страницы (cookies + 1251)
+let plLastDebug = ''
+async function plFetchLogged(url) {
+    await plEnsurePage()
+    const run = plListChain.then(async () => {
+        return plPageList.evaluate(async (u) => {
+            const r = await fetch(u, { credentials: 'include' })
+            const bytes = await r.arrayBuffer()
+            return new TextDecoder('windows-1251').decode(bytes)
+        }, url)
+    })
+    plListChain = run.catch(() => '')
+    const html = await run
+    plLastDebug = `len=${html.length} rows=${(html.match(/<tr id="tr-\d+"/g) || []).length} seedmed=${(html.match(/seedmed/g) || []).length} head=${html.slice(0, 60).replace(/\s+/g, ' ')}`
+    return html
+}
 // Pornolab открывает рекламные попандеры из нашей вкладки — прибираем сразу,
 // иначе в проектном Chrome накопятся dynspt/promo-вкладки.
 const PL_AD_URL_RE = /promo\.php|dynspt\.com|go\.pornolab|\/click/
@@ -891,11 +947,14 @@ async function plEnsurePage() {
                 popped.url().match(PL_AD_URL_RE) ? popped.close().catch(() => {}) : null
             })
         }
+        plPageList = await page.context().newPage()
         plPageCard = await page.context().newPage()
         await plPageCard.goto(PL_BASE + '/index.php', { waitUntil: 'domcontentloaded', timeout: 45000 })
         await plPageCard.waitForTimeout(700)
         const loggedIn = await plPageCard.evaluate(() => (typeof LOGGED_IN !== 'undefined') ? LOGGED_IN : 0).catch(() => 0)
         if (!loggedIn) throw new Error('Pornolab: нет авторизации в проектном Chrome — залогиньтесь в его окне')
+        // Списковая вкладка становится на origin pornolab для внутренних fetch
+        await plPageList.goto(PL_BASE + '/index.php', { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {})
     })().catch(e => { plPagesReady = null; throw e })
     return plPagesReady
 }
@@ -1064,6 +1123,7 @@ const server = http.createServer(async (req, res) => {
             ok: true,
             service: 'lampa-kinozal-dev',
             mode: SOURCE,
+            pl_debug: plLastDebug,
             browser_profile: SOURCE === 'browser' ? (BROWSER_CDP_URL ? 'separate-project-chrome' : BROWSER_PROFILE) : ''
         })
     }
@@ -1137,7 +1197,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && url.pathname === '/pl/v1/list') {
         const section = String(url.searchParams.get('section') || 'week')
-        if (!['week', 'month', 'siterips', 'siterips_ru'].includes(section)) return sendJson(res, 400, { ok: false, message: 'Неизвестный раздел PL' })
+        if (section !== 'week' && section !== 'month' && !PL_FORUMS[section]) return sendJson(res, 400, { ok: false, message: 'Неизвестный раздел PL' })
         const limit = Math.min(50, Math.max(10, Number(url.searchParams.get('limit') || 50) || 50))
         const page = Math.max(1, Number(url.searchParams.get('page') || 1) || 1)
         try {
