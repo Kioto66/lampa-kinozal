@@ -535,6 +535,8 @@
 
             function openFiles(files) {
                 files.sort(naturalSort)
+                // Человекочитаемые имена файлов (ядро LAMPA чистит релизный мусор)
+                try { if (Lampa.Torserver && Lampa.Torserver.clearFileName) Lampa.Torserver.clearFileName(files) } catch (e) { }
                 if (files.length === 1) return startBuffering(base, hash, files[0], files)
 
                 // Экран списка файлов внутри карточки: Lampa.Select на большом
@@ -544,7 +546,7 @@
                 body.empty()
                 body.append($('<h2 style="color:#fff;font-size:1.4em;margin:1em 1.5em .5em">Файлы раздачи (' + files.length + ')</h2>'))
                 files.slice(0, 300).forEach(function (f) {
-                    var btn = $('<div class="settings-param selector"><div class="settings-param-name">' + escapeHtml(shortName(f.path)) + '</div><div class="settings-param-value">' + (Number(f.length) > 1073741824 ? (f.length / 1073741824).toFixed(2) + ' GB' : (f.length / 1048576).toFixed(0) + ' MB') + '</div></div>')
+                    var btn = $('<div class="settings-param selector"><div class="settings-param-name">' + escapeHtml(f.path_human || shortName(f.path)) + '</div><div class="settings-param-value">' + (Number(f.length) > 1073741824 ? (f.length / 1073741824).toFixed(2) + ' GB' : (f.length / 1048576).toFixed(0) + ' MB') + '</div></div>')
                     btn.on('hover:focus', function () { scroll.update(btn) })
                     btn.on('hover:enter', function () { startBuffering(base, hash, f, files) })
                     body.append(btn)

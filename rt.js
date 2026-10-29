@@ -139,24 +139,24 @@
     }
 
     /*
-     * TMDB-постер для гибридных обложек. confident=true — только совпадение
-     * по типу и году (для замены уже готового постера), иначе любое совпадение
-     * по типу (для карточек вовсе без картинки).
+     * Поиск TMDB-карточки для гибридных обложек и названий эпизодов.
+     * confident=true — только совпадение по типу и году (для замены уже
+     * готового постера), иначе любое совпадение по типу.
      */
-    function tmdbPosterFor(item, confident, done) {
+    function tmdbMatchFor(item, confident, done) {
         try {
-            if (!Lampa.Api || typeof Lampa.Api.search !== 'function' || !Lampa.Api.img) return done('')
+            if (!Lampa.Api || typeof Lampa.Api.search !== 'function') return done(null)
             var queries = []
             ;[cleanQuery(item.original_title), cleanQuery(item.title)].forEach(function (q) {
                 if (q && queries.indexOf(q) < 0) queries.push(q)
             })
-            if (!queries.length) return done('')
+            if (!queries.length) return done(null)
 
             var yearMatch = String(item.title || '').match(/\[(\d{4})\s*г|\((\d{4})\)/)
             var year = item.year || (yearMatch ? (+yearMatch[1] || +yearMatch[2]) : '')
 
             function tryQ(index) {
-                if (index >= queries.length) return done('')
+                if (index >= queries.length) return done(null)
                 Lampa.Api.search({ query: queries[index], page: 1 }, function (response) {
                     var wantType = item.type === 'series' ? 'tv' : 'movie'
                     var pool = []
@@ -178,13 +178,26 @@
                         best = pool[0]
                     }
 
-                    var path = best.poster_path || ''
-                    done(path ? Lampa.Api.img(path, 'w300') : '')
+                    done(best)
                 }, function () { tryQ(index + 1) })
             }
 
             tryQ(0)
-        } catch (e) { done('') }
+        } catch (e) { done(null) }
+    }
+
+    function tmdbPosterFor(item, confident, done) {
+        tmdbMatchFor(item, confident, function (best) {
+            try {
+                var path = (best && best.poster_path) || ''
+                done(path && Lampa.Api.img ? Lampa.Api.img(path, 'w300') : '')
+            } catch (e) { done('') }
+        })
+    }
+
+    function padNum(n) {
+        n = Math.max(0, +n || 0)
+        return (n < 10 ? '0' : '') + n
     }
 
     function openCard(item) {
@@ -658,6 +671,8 @@
 
             function openFiles(files) {
                 files.sort(naturalSort)
+                // Человекочитаемые имена файлов (ядро LAMPA чистит релизный мусор)
+                try { if (Lampa.Torserver && Lampa.Torserver.clearFileName) Lampa.Torserver.clearFileName(files) } catch (e) { }
                 if (files.length === 1) return startBuffering(base, hash, files[0], files)
 
                 // Экран списка файлов внутри карточки: Lampa.Select на большом
@@ -666,14 +681,62 @@
                 filesState = { base: base, hash: hash, files: files }
                 body.empty()
                 body.append($('<h2 style="color:#fff;font-size:1.4em;margin:1em 1.5em .5em">Файлы раздачи (' + files.length + ')</h2>'))
+                var rows = []
                 files.slice(0, 300).forEach(function (f) {
-                    var btn = $('<div class="settings-param selector"><div class="settings-param-name">' + escapeHtml(shortName(f.path)) + '</div><div class="settings-param-value">' + (Number(f.length) > 1073741824 ? (f.length / 1073741824).toFixed(2) + ' GB' : (f.length / 1048576).toFixed(0) + ' MB') + '</div></div>')
+                    var label = fileLabel(f)
+                    var btn = $('<div class="settings-param selector"><div class="settings-param-name">' + escapeHtml(label) + '</div><div class="settings-param-value">' + (Number(f.length) > 1073741824 ? (f.length / 1073741824).toFixed(2) + ' GB' : (f.length / 1048576).toFixed(0) + ' MB') + '</div></div>')
                     btn.on('hover:focus', function () { scroll.update(btn) })
                     btn.on('hover:enter', function () { startBuffering(base, hash, f, files) })
                     body.append(btn)
+                    rows.push({ f: f, btn: btn })
                 })
+                updateEpisodeTitles(rows)
                 scroll.reset()
                 Lampa.Controller.toggle('content')
+            }
+
+            // Метка файла: для сериалов — S01E02 из имени файла (EpisodeParser ядра)
+            function fileLabel(f) {
+                var base = f.path_human || shortName(f.path)
+                if (item.type === 'series') {
+                    try {
+                        if (Lampa.Torserver && Lampa.Torserver.parse) {
+                            var p = Lampa.Torserver.parse({ path: f.path, filename: shortName(f.path), movie: { number_of_seasons: 1, original_title: item.original_title || item.title }, is_file: false })
+                            if (p && p.episode) {
+                                f.__se = p
+                                return 'S' + padNum(p.season) + 'E' + padNum(p.episode) + ' · ' + base
+                            }
+                        }
+                    } catch (e) { }
+                }
+                return base
+            }
+
+            // Названия эпизодов из TMDB: найдя карточку, тянем сезоны и
+            // обновляем строки списка по мере поступления данных
+            function updateEpisodeTitles(rows) {
+                if (item.type !== 'series' || !Lampa.Api || !Lampa.Api.seasons || !Lampa.Api.search) return
+                tmdbMatchFor(item, false, function (tv) {
+                    if (!tv || !tv.id) return
+                    var seasons = []
+                    rows.forEach(function (r) {
+                        if (r.f.__se && seasons.indexOf(r.f.__se.season) < 0) seasons.push(r.f.__se.season)
+                    })
+                    seasons.slice(0, 3).forEach(function (sn) {
+                        try {
+                            Lampa.Api.seasons(tv, sn, function (data) {
+                                var map = {}
+                                ((data || {}).episodes || []).forEach(function (ep) { map[+ep.episode_number] = ep.name || '' })
+                                rows.forEach(function (r) {
+                                    var se = r.f.__se
+                                    if (!se || se.season !== sn) return
+                                    var name = map[+se.episode]
+                                    if (name) try { r.btn.find('.settings-param-name').text('S' + padNum(se.season) + 'E' + padNum(se.episode) + ' · ' + name) } catch (e) { }
+                                })
+                            })
+                        } catch (e) { }
+                    })
+                })
             }
 
             network.silent(base + '/torrents', function (torrent) {
