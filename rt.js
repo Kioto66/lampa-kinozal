@@ -390,14 +390,29 @@
 
         function playFile(base, hash, file, files) {
             var index = typeof file.id !== 'undefined' ? file.id : files.indexOf(file)
-            var url = base + '/stream/' + encodeURIComponent(shortName(file.path)) + '?link=' + hash + '&index=' + index + '&play'
+            var name = shortName(file.path)
             if (closed) return
 
-            Lampa.Player.play({ title: item.title, url: url })
+            var url
+            if (Lampa.Torserver && Lampa.Torserver.stream) {
+                url = Lampa.Torserver.stream(name, hash, index).replace('&preload', '&play')
+            } else {
+                url = base + '/stream/' + encodeURIComponent(name) + '?link=' + hash + '&index=' + index + '&play'
+            }
+
+            var element = { title: item.title, url: url, torrent_hash: hash }
+            var playerMode = field('player', 'auto')
+            if (playerMode === 'lampa') element.launch_player = 'lampa'
+            if (playerMode === 'android') element.launch_player = 'android'
+
+            Lampa.Player.play(element)
             Lampa.Player.callback(function () { Lampa.Controller.toggle('content') })
             Lampa.Player.playlist(files.map(function (f) {
                 var findex = typeof f.id !== 'undefined' ? f.id : files.indexOf(f)
-                return { title: shortName(f.path), url: base + '/stream/' + encodeURIComponent(shortName(f.path)) + '?link=' + hash + '&index=' + findex + '&play' }
+                var furl = Lampa.Torserver && Lampa.Torserver.stream
+                    ? Lampa.Torserver.stream(shortName(f.path), hash, findex).replace('&preload', '&play')
+                    : base + '/stream/' + encodeURIComponent(shortName(f.path)) + '?link=' + hash + '&index=' + findex + '&play'
+                return { title: shortName(f.path), url: furl, torrent_hash: hash }
             }))
         }
 
@@ -602,6 +617,7 @@
         Lampa.SettingsApi.addComponent({ component: NS + 'settings', name: 'RT — RuTracker', icon: '' })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'section', type: 'select', values: { movies_new: 'Новинки кино (зарубежные)', movies_ru: 'Наше кино', series_foreign: 'Зарубежные сериалы (HD)', series_ru: 'Русские сериалы (HD)', theater: 'Театр' }, default: 'movies_new' }, field: { name: 'Раздел' } })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'proxy_url', type: 'input', values: '', default: DEFAULT_PROXY_URL }, field: { name: 'URL локального API', description: 'По умолчанию: ' + DEFAULT_PROXY_URL } })
+        Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'player', type: 'select', values: { auto: 'Авто (MKV/торренты — Android-плеер)', lampa: 'Всегда внутренний плеер LAMPA', android: 'Всегда Android-плеер' }, default: 'auto' }, field: { name: 'Плеер', description: 'Android-плеер корректно читает MKV с DTS/TrueHD' } })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'torr_url', type: 'input', values: '', default: 'http://127.0.0.1:8090' }, field: { name: 'TorrServer', description: 'Если не задан в настройках LAMPA' } })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'native_cards', type: 'select', values: { on: 'Открывать карточки LAMPA (TMDB)', off: 'Показывать только раздачу' }, default: 'on' }, field: { name: 'Экран карточки' } })
     }
