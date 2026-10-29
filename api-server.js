@@ -420,6 +420,122 @@ async function nmSection(section, categoryIds) {
     return payload
 }
 
+/*
+ * RT (RuTracker) — разделы через viewforum, чтение браузером (сессия с логином
+ * в профиле .kinozal-manual-profile). Карточки собраны из строк списка
+ * (title/size/seeds/date), magnet/poster/description — лениво через /rt/v1/card.
+ */
+const RT_BASE = (process.env.RT_BASE_URL || 'https://rutracker.org').replace(/\/$/, '')
+const RT_SECTIONS = Object.freeze({
+    movies_new: [252],
+    movies_ru: [22],
+    series_foreign: [1803],
+    series_ru: [81],
+    theater: [511]
+})
+const RT_LIST_TTL_MS = Math.max(0, Number(process.env.RT_LIST_TTL_MS || 180000))
+const RT_CARD_TTL_MS = Math.max(0, Number(process.env.RT_CARD_TTL_MS || 600000))
+const rtListCache = new Map()
+const rtCardCache = new Map()
+
+function rtDecodeHtml(s) {
+    return String(s || '')
+        .replace(/&#(\d+);/g, (_, c) => String.fromCodePoint(+c))
+        .replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ')
+}
+
+async function rtFetchHtml(url) {
+    // общий браузер и очередь с кинозальной читалкой
+    const page = await getBrowserPage()
+    const run = browserQueue.then(async () => {
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 })
+        await page.waitForTimeout(900)
+        return page.content()
+    })
+    browserQueue = run.catch(() => '')
+    return run
+}
+
+function rtParseForum(html) {
+    const cards = []
+    const chunks = html.match(/<tr[^>]*data-topic_id="\d+"[\s\S]*?<\/tr>/g) || []
+    for (const chunk of chunks) {
+        if (!chunk.includes('seedmed')) continue // правила/объявления без торрента
+        const idMatch = chunk.match(/data-topic_id="(\d+)"/)
+        const titleMatch = chunk.match(/<a[^>]*class="[^"]*\btorTopic\b[^"]*"[^>]*>([\s\S]{5,300}?)<\/a>/)
+        if (!idMatch || !titleMatch) continue
+        const id = +idMatch[1]
+        const title = rtDecodeHtml(titleMatch[1].replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').replace(/^[·\s*]+/, '').trim()
+        const seeds = (chunk.match(/class="seedmed"[^>]*>(?:<b>)?(\d+)/) || [])[1] || ''
+        const leech = (chunk.match(/class="leechmed"[^>]*>(?:<b>)?(\d+)/) || [])[1] || ''
+        const size = rtDecodeHtml((chunk.match(/href="dl\.php\?t=\d+"[^>]*>([\d.,]+(?:&nbsp;|\s)?[А-Яа-яЁёA-Za-z]{2})</) || [])[1] || '').replace(/\s+/g, ' ').trim()
+        const date = (chunk.match(/(\d{4}-\d{2}-\d{2}\s\d{2}:\d{2})/) || [])[1] || ''
+        cards.push({
+            id: 'rt-' + id,
+            rt_id: id,
+            title,
+            size: size.trim(),
+            seeds: Number(seeds),
+            leech: Number(leech),
+            published_at: date,
+            source_url: `${RT_BASE}/forum/viewtopic.php?t=${id}`,
+            magnet: ''
+        })
+    }
+    return cards
+}
+
+function rtParseTopic(html) {
+    const magnet = (html.match(/magnet:\?xt=urn:btih:[A-F0-9a-f]{32,}/) || [])[0] || ''
+    const poster = rtDecodeHtml((html.match(/<var[^>]*class="[^"]*postImg[^"]*"[^>]*title="([^"]+)"/i) || [])[1] || '')
+    const descChunk = (html.match(/class="post_body"[^>]*>([\s\S]{0,6000}?)<\/div>/) || [])[1] || ''
+    const desc = rtDecodeHtml(descChunk.replace(/<var[\s\S]*?<\/var>/g, ' ').replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim()
+    return { magnet, poster: poster.trim(), overview: desc.slice(0, 700) }
+}
+
+async function rtList(section) {
+    const cacheKey = section
+    const cached = rtListCache.get(cacheKey)
+    if (cached && Date.now() - cached.at < RT_LIST_TTL_MS) return cached.payload
+
+    const forumIds = RT_SECTIONS[section]
+    const merged = []
+    const seenIds = new Set()
+    const byKey = new Map()
+    for (const forumId of forumIds) {
+        const html = await rtFetchHtml(`${RT_BASE}/forum/viewforum.php?f=${forumId}`)
+        for (const card of rtParseForum(html)) {
+            if (seenIds.has(card.id)) continue
+            seenIds.add(card.id)
+            const key = nmBaseKey(card.title)
+            const prev = byKey.get(key)
+            if (prev) {
+                if (nmQuality(card.title) > nmQuality(prev.title)) {
+                    merged.splice(merged.indexOf(prev), 1, card)
+                    byKey.set(key, card)
+                }
+            } else {
+                merged.push(card)
+                byKey.set(key, card)
+            }
+        }
+    }
+    rtListCache.set(cacheKey, { at: Date.now(), payload: merged })
+    return merged
+}
+
+async function rtCard(topicId) {
+    const cached = rtCardCache.get(topicId)
+    if (cached && Date.now() - cached.at < RT_CARD_TTL_MS) return cached.payload
+
+    const html = await rtFetchHtml(`${RT_BASE}/forum/viewtopic.php?t=${topicId}`)
+    if (/Just a moment/i.test(html)) throw new Error('RuTracker показал проверку Cloudflare — открой окно проекта Chrome и пройди её вручную')
+    const parsed = rtParseTopic(html)
+    const payload = Object.assign({ rt_id: topicId }, parsed)
+    rtCardCache.set(topicId, { at: Date.now(), payload })
+    return payload
+}
+
 function pageOf(items, page, limit) {
     const totalPages = Math.max(1, Math.ceil(items.length / limit))
     const start = (page - 1) * limit
@@ -593,6 +709,31 @@ const server = http.createServer(async (req, res) => {
         }
     }
 
+    if (req.method === 'GET' && url.pathname === '/rt/v1/list') {
+        const section = String(url.searchParams.get('section') || 'movies_new')
+        if (!RT_SECTIONS[section]) return sendJson(res, 400, { ok: false, message: 'Неизвестный раздел RT' })
+        const limit = Math.min(80, Math.max(10, Number(url.searchParams.get('limit') || 60) || 60))
+        const page = Math.max(1, Number(url.searchParams.get('page') || 1) || 1)
+        try {
+            const items = await rtList(section)
+            return sendJson(res, 200, proxyPosters(req.headers.host, pageOf(items, page, limit)))
+        } catch (error) {
+            return sendJson(res, 502, { ok: false, message: error.message || 'Не удалось получить раздел RuTracker' })
+        }
+    }
+
+    if (req.method === 'GET' && url.pathname === '/rt/v1/card') {
+        const topicId = String(url.searchParams.get('t') || '').replace(/\D/g, '')
+        if (!topicId) return sendJson(res, 400, { ok: false, message: 'Нет id темы' })
+        try {
+            const card = await rtCard(topicId)
+            card.poster = card.poster ? proxyImageUrl(req.headers.host, card.poster) : ''
+            return sendJson(res, 200, card)
+        } catch (error) {
+            return sendJson(res, 502, { ok: false, message: error.message || 'Не удалось получить тему RuTracker' })
+        }
+    }
+
     if (req.method === 'GET' && url.pathname === '/nm/v1/list') {
         const section = String(url.searchParams.get('section') || 'movies_new')
         if (!NM_SECTIONS[section]) return sendJson(res, 400, { ok: false, message: 'Неизвестный раздел NM' })
@@ -610,8 +751,8 @@ const server = http.createServer(async (req, res) => {
         return handleImage(res, url.searchParams.get('url'))
     }
 
-    if (req.method === 'GET' && (url.pathname === '/plugin.js' || url.pathname === '/nm.js' || url.pathname === '/mock-results.json')) {
-        const fileMap = { '/plugin.js': 'plugin.js', '/nm.js': 'nm.js', '/mock-results.json': 'mock-results.json' }
+    if (req.method === 'GET' && (url.pathname === '/plugin.js' || url.pathname === '/nm.js' || url.pathname === '/rt.js' || url.pathname === '/mock-results.json')) {
+        const fileMap = { '/plugin.js': 'plugin.js', '/nm.js': 'nm.js', '/rt.js': 'rt.js', '/mock-results.json': 'mock-results.json' }
         const file = path.join(__dirname, fileMap[url.pathname])
         try {
             const body = fs.readFileSync(file)
