@@ -83,11 +83,14 @@
             fail(this.network.errorDecode ? this.network.errorDecode(xhr, exception) : 'Ошибка локального API')
         }.bind(this))
     }
-    Provider.prototype.card = function (rtId, done, fail) {
-        var url = this.baseUrl + '/rt/v1/card?t=' + encodeURIComponent(rtId)
-        this.network.silent(url, function (response) {
-            try { done(typeof response === 'string' ? JSON.parse(response) : response) } catch (e) { fail('Неверный JSON карточки') }
-        }, function () { fail('Не удалось получить данные темы') })
+    Provider.prototype.card = function (rtId) {
+        var self = this
+        return new Promise(function (resolve, reject) {
+            var url = self.baseUrl + '/rt/v1/card?t=' + encodeURIComponent(rtId)
+            self.network.silent(url, function (response) {
+                try { resolve(typeof response === 'string' ? JSON.parse(response) : response) } catch (e) { reject(new Error('Неверный JSON карточки')) }
+            }, function () { reject(new Error('Не удалось получить данные темы')) })
+        })
     }
     Provider.prototype.clear = function () { this.network.clear() }
 
@@ -526,7 +529,7 @@
         var provider = new Provider(field('proxy_url', '') || DEFAULT_PROXY_URL)
 
         function providerCard(done, fail) {
-            provider.card(item.rt_id, done, fail)
+            provider.card(item.rt_id).then(done, fail)
         }
 
         // Догружаем полные данные темы (magnet, постер, описание)
