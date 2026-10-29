@@ -119,6 +119,55 @@
         return []
     }
 
+    /*
+     * TMDB-постер для гибридных обложек. confident=true — только совпадение
+     * по типу и году (для замены уже готового постера), иначе любое совпадение
+     * по типу (для карточек вовсе без картинки).
+     */
+    function tmdbPosterFor(item, confident, done) {
+        try {
+            if (!Lampa.Api || typeof Lampa.Api.search !== 'function' || !Lampa.Api.img) return done('')
+            var queries = []
+            ;[cleanQuery(item.original_title), cleanQuery(item.title)].forEach(function (q) {
+                if (q && queries.indexOf(q) < 0) queries.push(q)
+            })
+            if (!queries.length) return done('')
+
+            var yearMatch = String(item.title || '').match(/\[(\d{4})\s*г|\((\d{4})\)/)
+            var year = item.year || (yearMatch ? (+yearMatch[1] || +yearMatch[2]) : '')
+
+            function tryQ(index) {
+                if (index >= queries.length) return done('')
+                Lampa.Api.search({ query: queries[index], page: 1 }, function (response) {
+                    var wantType = item.type === 'series' ? 'tv' : 'movie'
+                    var pool = []
+                    collectSearchGroups(response).forEach(function (g) {
+                        if (g && g.type === wantType && Array.isArray(g.results)) pool = pool.concat(g.results)
+                    })
+                    if (!pool.length) return tryQ(index + 1)
+
+                    var best = null
+                    if (year) {
+                        pool.some(function (r) {
+                            var date = r.release_date || r.first_air_date || ''
+                            if (String(date).slice(0, 4) === String(year)) { best = r; return true }
+                            return false
+                        })
+                    }
+                    if (!best) {
+                        if (confident) return tryQ(index + 1)
+                        best = pool[0]
+                    }
+
+                    var path = best.poster_path || ''
+                    done(path ? Lampa.Api.img(path, 'w300') : '')
+                }, function () { tryQ(index + 1) })
+            }
+
+            tryQ(0)
+        } catch (e) { done('') }
+    }
+
     function openCard(item) {
         var native = field('native_cards', 'on') === 'on'
         var canNative = native && Lampa.Api && typeof Lampa.Api.search === 'function' && Lampa.Router && Lampa.Router.call
@@ -171,6 +220,8 @@
     }
 
     function pushScreen(section) {
+        // Запоминаем последний раздел — следующий вход откроет его же
+        Lampa.Storage.set(NS + 'section', section)
         Lampa.Activity.push({ url: '', title: NAME, component: COMPONENT, page: 1, section: section })
     }
 
@@ -197,6 +248,23 @@
         var provider = new Provider(field('proxy_url', '') || DEFAULT_PROXY_URL)
         var section = String(object.section || field('section', 'movies_new'))
 
+        // Гибридные обложки: уверенное совпадение в TMDB (тип + год) заменяет
+        // постер из темы — первая картинка поста не всегда обложка.
+        var chains = [Promise.resolve(), Promise.resolve(), Promise.resolve()]
+        var chainIdx = 0
+        var posterBudget = 40
+
+        function setPoster(card, data, poster) {
+            data.poster = poster
+            data.img = poster
+            try {
+                var el = card.render(true)
+                var img = el.querySelector ? el.querySelector('.card__img') : null
+                if (img) img.src = poster
+                else $(el).find('.card__img').attr('src', poster)
+            } catch (e) { }
+        }
+
         var comp = Lampa.Maker.make('Category', { title: NAME, page: 1 })
 
         comp.use({
@@ -221,6 +289,18 @@
                 card.use({
                     onlyEnter: function () { openCard(data) }
                 })
+                if (data.id && posterBudget > 0) {
+                    posterBudget--
+                    var idx = chainIdx++ % chains.length
+                    chains[idx] = chains[idx].then(function () {
+                        return new Promise(function (resolve) {
+                            tmdbPosterFor(data, !!data.poster, function (p) {
+                                if (p) setPoster(card, data, p)
+                                resolve()
+                            })
+                        })
+                    }).catch(function () { })
+                }
             }
         })
 

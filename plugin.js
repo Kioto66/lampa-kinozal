@@ -275,6 +275,9 @@
     }
 
     function pushScreen(category, period) {
+        // Запоминаем последний выбор — следующий вход откроет его же
+        Lampa.Storage.set(NS + 'category', category)
+        Lampa.Storage.set(NS + 'period', period)
         Lampa.Activity.push({ url: '', title: 'Кинозал', component: COMPONENT, page: 1, category: category, period: period })
     }
 

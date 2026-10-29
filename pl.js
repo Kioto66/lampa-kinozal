@@ -128,6 +128,8 @@
     }
 
     function pushScreen(section) {
+        // Запоминаем последний раздел — следующий вход откроет его же
+        Lampa.Storage.set(NS + 'section', section)
         Lampa.Activity.push({ url: '', title: NAME, component: COMPONENT, page: 1, section: section })
     }
 
