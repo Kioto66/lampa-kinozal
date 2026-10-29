@@ -443,6 +443,76 @@
             tick()
         }
 
+        /*
+         * История просмотров LAMPA: после успешного добавления раздачи в TorrServer
+         * пишем карточку в Favorite.history. Сначала пробуем нативную TMDB-карточку
+         * (полноценный экран при Enter из истории), иначе свою минималистичную.
+         */
+        function recordHistory() {
+            try {
+                if (!Lampa.Favorite || typeof Lampa.Favorite.add !== 'function') return
+
+                var queries = []
+                ;[cleanQuery(item.original_title), cleanQuery(item.title)].forEach(function (q) {
+                    if (q && queries.indexOf(q) < 0) queries.push(q)
+                })
+
+                var yearMatch = String(item.title).match(/\[(\d{4})\s*г/)
+                var year = item.year || (yearMatch ? +yearMatch[1] : '')
+
+                function add(card) {
+                    try { Lampa.Favorite.add('history', card) } catch (e) { }
+                }
+
+                function addCustom() {
+                    var card = {
+                        id: NS + 'torrent_' + item.id,
+                        title: item.title,
+                        original_title: item.original_title || '',
+                        poster: item.poster || '',
+                        img: item.poster || '',
+                        release_date: year ? year + '-01-01' : '',
+                        overview: item.overview || '',
+                        source: 'nm'
+                    }
+                    if (item.type === 'series') {
+                        card.name = item.title
+                        card.original_name = item.original_title || item.title
+                        card.first_air_date = card.release_date
+                    }
+                    add(card)
+                }
+
+                function tryNative(index) {
+                    if (index >= queries.length) return addCustom()
+                    Lampa.Api.search({ query: queries[index], page: 1 }, function (response) {
+                        var wantType = item.type === 'series' ? 'tv' : 'movie'
+                        var pool = []
+                        collectSearchGroups(response).forEach(function (g) {
+                            if (g && g.type === wantType && Array.isArray(g.results)) pool = pool.concat(g.results)
+                        })
+                        if (!pool.length) return tryNative(index + 1)
+
+                        var best = null
+                        if (year) {
+                            pool.some(function (r) {
+                                var date = r.release_date || r.first_air_date || ''
+                                if (String(date).slice(0, 4) === String(year)) { best = r; return true }
+                                return false
+                            })
+                        }
+                        if (!best) best = pool[0]
+
+                        best.source = 'tmdb'
+                        add(best)
+                    }, function () { tryNative(index + 1) })
+                }
+
+                if (queries.length && Lampa.Api && typeof Lampa.Api.search === 'function') tryNative(0)
+                else addCustom()
+            } catch (e) { logError('recordHistory', e) }
+        }
+
         function watchStart(magnet) {
             var base = torrBase()
             if (!base) return notify('Не указан адрес TorrServer (настройки LAMPA или плагина ' + NAME + ')', true)
@@ -466,6 +536,8 @@
             network.silent(base + '/torrents', function (torrent) {
                 hash = torrent && torrent.hash
                 if (!hash) return fail()
+
+                recordHistory()
 
                 // Метаданные магнита могут догружаться несколько секунд — ждём файлы
                 var ready = ((torrent || {}).file_stats || []).filter(function (f) {

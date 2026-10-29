@@ -523,6 +523,8 @@
                 hash = torrent && torrent.hash
                 if (!hash) return fail()
 
+                recordHistory()
+
                 var ready = ((torrent || {}).file_stats || []).filter(function (f) {
                     return VIDEO_EXT.indexOf(String(f.path).split('.').pop().toLowerCase()) >= 0
                 })
@@ -540,6 +542,76 @@
         }
 
         var hash = ''
+
+        /*
+         * История просмотров LAMPA: после успешного добавления раздачи в TorrServer
+         * пишем карточку в Favorite.history. Сначала пробуем нативную TMDB-карточку
+         * (полноценный экран при Enter из истории), иначе свою минималистичную.
+         */
+        function recordHistory() {
+            try {
+                if (!Lampa.Favorite || typeof Lampa.Favorite.add !== 'function') return
+
+                var queries = []
+                ;[cleanQuery(item.original_title), cleanQuery(item.title)].forEach(function (q) {
+                    if (q && queries.indexOf(q) < 0) queries.push(q)
+                })
+
+                var yearMatch = String(item.title).match(/\[(\d{4})\s*г/)
+                var year = item.year || (yearMatch ? +yearMatch[1] : '')
+
+                function add(card) {
+                    try { Lampa.Favorite.add('history', card) } catch (e) { }
+                }
+
+                function addCustom() {
+                    var card = {
+                        id: NS + 'torrent_' + item.rt_id,
+                        title: item.title,
+                        original_title: item.original_title || '',
+                        poster: item.poster || '',
+                        img: item.poster || '',
+                        release_date: year ? year + '-01-01' : '',
+                        overview: item.overview || '',
+                        source: 'rt'
+                    }
+                    if (item.type === 'series') {
+                        card.name = item.title
+                        card.original_name = item.original_title || item.title
+                        card.first_air_date = card.release_date
+                    }
+                    add(card)
+                }
+
+                function tryNative(index) {
+                    if (index >= queries.length) return addCustom()
+                    Lampa.Api.search({ query: queries[index], page: 1 }, function (response) {
+                        var wantType = item.type === 'series' ? 'tv' : 'movie'
+                        var pool = []
+                        collectSearchGroups(response).forEach(function (g) {
+                            if (g && g.type === wantType && Array.isArray(g.results)) pool = pool.concat(g.results)
+                        })
+                        if (!pool.length) return tryNative(index + 1)
+
+                        var best = null
+                        if (year) {
+                            pool.some(function (r) {
+                                var date = r.release_date || r.first_air_date || ''
+                                if (String(date).slice(0, 4) === String(year)) { best = r; return true }
+                                return false
+                            })
+                        }
+                        if (!best) best = pool[0]
+
+                        best.source = 'tmdb'
+                        add(best)
+                    }, function () { tryNative(index + 1) })
+                }
+
+                if (queries.length && Lampa.Api && typeof Lampa.Api.search === 'function') tryNative(0)
+                else addCustom()
+            } catch (e) { logError('recordHistory', e) }
+        }
 
         function buildDetail() {
             body.empty()
@@ -570,12 +642,12 @@
 
             if (item.rt_id) {
                 addWatchStyle()
-                var watch = $('<div class="simple-button selector rt-watch" style="margin:1em 1.5em;display:inline-flex">&#9654; Смотреть (TorrServer)</div>')
-                watch.on('hover:focus', function () {
-                    last = watch
-                    scroll.update(watch)
+                var watchBtn = $('<div class="simple-button selector rt-watch" style="margin:1em 1.5em;display:inline-flex">&#9654; Смотреть (TorrServer)</div>')
+                watchBtn.on('hover:focus', function () {
+                    last = watchBtn
+                    scroll.update(watchBtn)
                 })
-                watch.on('hover:enter', function () {
+                watchBtn.on('hover:enter', function () {
                     if (magnet) return watch(magnet)
                     notify('Получаю данные раздачи с RuTracker…')
                     providerCard(function (info) {
@@ -583,7 +655,7 @@
                         else notify('Magnet не найден в теме RuTracker', true)
                     }, function (message) { notify(message, true) })
                 })
-                body.append(watch)
+                body.append(watchBtn)
             }
         }
 

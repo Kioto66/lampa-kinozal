@@ -570,6 +570,8 @@ function rtParseTopic(html) {
     return { magnet, poster: poster.trim(), overview: desc.slice(0, 700) }
 }
 
+const RT_SECTION_TYPE = { movies_new: 'movie', movies_ru: 'movie', series_foreign: 'series', series_ru: 'series', theater: 'movie' }
+
 async function rtList(section) {
     const cacheKey = section
     const cached = rtListCache.get(cacheKey)
@@ -582,6 +584,8 @@ async function rtList(section) {
     for (const forumId of forumIds) {
         const html = await rtFetchHtml(`${RT_BASE}/forum/viewforum.php?f=${forumId}`)
         for (const card of rtParseForum(html)) {
+            // Тип нужен истории просмотров LAMPA (фильмы/сериалы): раздел надёжнее
+            card.type = (RT_SECTION_TYPE[section] === 'series' || nmIsSeries(card.title)) ? 'series' : 'movie'
             if (seenIds.has(card.id)) continue
             seenIds.add(card.id)
             const key = nmBaseKey(card.title)
