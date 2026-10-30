@@ -372,101 +372,6 @@
         var filesState = null
         var closed = false
 
-        /*
-         * Прогресс буферизации: греем кэш TorrServer запросом /stream?preload
-         * и опрашиваем /cache, пока файл не догрузится. Потом — плеер.
-         */
-        var bufferTimer = null
-        var bufferController = null
-
-        function humanSpeed(bytes) {
-            var v = Number(bytes) || 0
-            if (v > 1048576) return (v / 1048576).toFixed(1) + ' MB/s'
-            if (v > 1024) return (v / 1024).toFixed(0) + ' KB/s'
-            return v.toFixed(0) + ' B/s'
-        }
-
-        function stopBuffering() {
-            if (bufferTimer) { clearTimeout(bufferTimer); bufferTimer = null }
-            if (bufferController) { try { bufferController.abort() } catch (e) { } bufferController = null }
-        }
-
-        function startBuffering(base, hash, file, files) {
-            var index = typeof file.id !== 'undefined' ? file.id : files.indexOf(file)
-            var name = shortName(file.path)
-
-            function url(mode) {
-                if (Lampa.Torserver && Lampa.Torserver.stream) {
-                    return Lampa.Torserver.stream(name, hash, index).replace('&preload', '&' + mode)
-                }
-                return base + '/stream/' + encodeURIComponent(name) + '?link=' + hash + '&index=' + index + '&' + mode
-            }
-
-            mode = 'buffer'
-            stopBuffering()
-            try { bufferController = new AbortController() } catch (e) { bufferController = null }
-
-            // Неблокирующий прогрев кэша; соединение живёт, пока не отыграем или не отменим
-            try {
-                var opts = bufferController ? { signal: bufferController.signal } : undefined
-                fetch(url('preload'), opts).catch(function () { })
-            } catch (e) { }
-
-            body.empty()
-            body.append($('<h2 style="color:#fff;font-size:1.4em;margin:1em 1.5em .5em">Загрузка раздачи…</h2>'))
-            body.append($('<div style="margin:0 1.5em;height:.4em;background:rgba(255,255,255,.15);border-radius:.2em"><div class="pl-buffer-bar" style="height:100%;width:0;background:#3d7dd8;border-radius:.2em"></div></div>'))
-            body.append($('<p class="pl-buffer-text" style="color:#fff;opacity:.85;margin:.5em 1.5em">0%</p>'))
-            var skipBtn = $('<div class="simple-button selector" style="margin:1em 1.5em;display:inline-flex">&#9654; Воспроизвести сейчас</div>')
-            skipBtn.on('hover:focus', function () { last = skipBtn; scroll.update(skipBtn) })
-            skipBtn.on('hover:enter', function () {
-                stopBuffering()
-                playFile(base, hash, file, files)
-            })
-            body.append(skipBtn)
-            scroll.reset()
-            Lampa.Controller.toggle('content')
-
-            var cacheNet = new Lampa.Reguest()
-            cacheNet.timeout(5000)
-            var attempts = 0
-            var errors = 0
-
-            function done() {
-                stopBuffering()
-                cacheNet.clear()
-                playFile(base, hash, file, files)
-            }
-
-            function tick() {
-                if (closed) return
-                attempts++
-                if (attempts > 120) return done() // 2 минуты — играем как есть
-                cacheNet.silent(base + '/cache', function (state) {
-                    if (closed) return
-                    var preloaded = Number(state && state.torrent && state.torrent.preloaded_bytes) || 0
-                    var preloadSize = Number(state && state.torrent && state.torrent.preload_size) || 0
-                    var speed = Number(state && state.torrent && state.torrent.download_speed) || 0
-                    var percent = 0
-                    if (preloadSize > 0) percent = Math.min(100, Math.round(preloaded / preloadSize * 100))
-                    else if (Number(state && state.capacity) > 0) percent = Math.min(100, Math.round((Number(state.filled) || 0) / Number(state.capacity) * 100))
-                    var text = percent + '%'
-                    if (speed > 0) text += ' · ' + humanSpeed(speed)
-                    body.find('.pl-buffer-bar').css('width', percent + '%')
-                    body.find('.pl-buffer-text').text(text)
-                    if (percent >= 100) return done()
-                    bufferTimer = setTimeout(tick, 1000)
-                }, function () {
-                    // /cache не отвечает — несколько ошибок подряд: играем сразу
-                    if (closed) return
-                    errors++
-                    if (errors >= 3) return done()
-                    bufferTimer = setTimeout(tick, 1000)
-                }, JSON.stringify({ action: 'get', hash: hash }))
-            }
-
-            bufferTimer = setTimeout(tick, 1000)
-        }
-
         function playFile(base, hash, file, files) {
             var index = typeof file.id !== 'undefined' ? file.id : files.indexOf(file)
             var name = shortName(file.path)
@@ -541,7 +446,7 @@
                 files.sort(naturalSort)
                 // Человекочитаемые имена файлов (ядро LAMPA чистит релизный мусор)
                 try { if (Lampa.Torserver && Lampa.Torserver.clearFileName) Lampa.Torserver.clearFileName(files) } catch (e) { }
-                if (files.length === 1) return startBuffering(base, hash, files[0], files)
+                if (files.length === 1) return playFile(base, hash, files[0], files)
 
                 // Экран списка файлов внутри карточки: Lampa.Select на большом
                 // списке подвешивал слабые ТВ-устройства.
@@ -552,7 +457,7 @@
                 files.slice(0, 300).forEach(function (f) {
                     var btn = $('<div class="settings-param selector"><div class="settings-param-name">' + escapeHtml(f.path_human || shortName(f.path)) + '</div><div class="settings-param-value">' + (Number(f.length) > 1073741824 ? (f.length / 1073741824).toFixed(2) + ' GB' : (f.length / 1048576).toFixed(0) + ' MB') + '</div></div>')
                     btn.on('hover:focus', function () { scroll.update(btn) })
-                    btn.on('hover:enter', function () { startBuffering(base, hash, f, files) })
+                    btn.on('hover:enter', function () { playFile(base, hash, f, files) })
                     body.append(btn)
                 })
                 scroll.reset()
@@ -674,15 +579,7 @@
                         else if (window.Navigator && window.Navigator.canmove) window.Navigator.move('down')
                     },
                     back: function () {
-                        if (mode === 'buffer') {
-                            stopBuffering()
-                            mode = 'detail'
-                            filesState = null
-                            buildDetail()
-                            scroll.reset()
-                            Lampa.Controller.toggle('content')
-                        }
-                        else if (mode === 'files') {
+                        if (mode === 'files') {
                             mode = 'detail'
                             filesState = null
                             last = false
@@ -710,7 +607,7 @@
         this.start = function () { startController.call(this) }
         this.stop = function () {}
         this.pause = function () {}
-        this.destroy = function () { closed = true; stopBuffering(); scroll.destroy() }
+        this.destroy = function () { closed = true; scroll.destroy() }
     }
 
     function registerSettings() {
