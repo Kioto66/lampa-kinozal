@@ -635,9 +635,9 @@ const PL_LIST_LIMIT = 50
 const PL_MIN_SEEDS = Math.max(0, Number(process.env.PL_MIN_SEEDS || 30))
 const PL_FORUMS = {
     siterips: { f: 1876, title: 'Сайтрипы 2026' },
-    siterips_hd: { f: 1878, title: 'Сайтрипы с русскими актрисами 2026 (HD)' },
+    siterips_hd: { f: 1875, title: 'Сайтрипы 2026 (HD)' },
     siterips_ru: { f: 1877, title: 'Сайтрипы с русскими актрисами 2026' },
-    amateur_ru: { f: 1676, title: 'Русское любительское видео' },
+    siterips_ru_hd: { f: 1878, title: 'Сайтрипы с русскими актрисами 2026 (HD)' },
     gangbang: { f: 1859, title: 'Гэнг-бэнг' },
     fisting: { f: 1734, title: 'Фистинг и дилдо' }
 }
@@ -712,7 +712,6 @@ function plParseForum(html) {
         const id = plRowId(chunk)
         const title = plRowTitle(chunk)
         if (!id || !title || /правила|правил\b|хранител/i.test(title)) continue
-        if (/folder_announce\.gif/.test(chunk)) continue // закрепы-объявления
         if (plIsPhotoSet(title)) continue
         // Сиды видны только под логином; закрепы-объявления их не имеют
         const seeds = (chunk.match(/class="seedmed"[^>]*>(?:<b>)?(\d+)/i) || [])[1] || ''
