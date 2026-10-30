@@ -446,6 +446,9 @@
     function DetailScreen(object) {
         var item = normalize(object.item)
         var scroll = new Lampa.Scroll({ mask: true, over: true })
+        // Без minus() скролл растёт вместе с контентом (список файлов не прокручивается):
+        // layer--wheight даёт экрану явную высоту вьюпорта
+        scroll.minus()
         var last = false
         var body = $('<div class="settings-body"></div>')
 
@@ -488,22 +491,26 @@
                 url = base + '/stream/' + encodeURIComponent(name) + '?link=' + hash + '&index=' + index + '&play'
             }
 
+            // Плейлист передаём внутри элемента запуска: ядро отдаст его и
+            // внутреннему плееру (активным станет играющий файл), и Android-плееру
+            var playlist = files.map(function (f) {
+                var findex = typeof f.id !== 'undefined' ? f.id : files.indexOf(f)
+                var fname = shortName(f.path)
+                var furl = Lampa.Torserver && Lampa.Torserver.stream
+                    ? Lampa.Torserver.stream(fname, hash, findex).replace('&preload', '&play')
+                    : base + '/stream/' + encodeURIComponent(fname) + '?link=' + hash + '&index=' + findex + '&play'
+                return { title: f.path_human || fname, url: furl, torrent_hash: hash }
+            })
+
             // torrent_hash включает автопереход на Android-плеер (MKV/DTS там
             // декодируются нормально), launch_player принудительно задаёт режим
-            var element = { title: item.title, url: url, torrent_hash: hash }
+            var element = { title: item.title, url: url, torrent_hash: hash, playlist: playlist }
             var playerMode = field('player', 'auto')
             if (playerMode === 'lampa') element.launch_player = 'lampa'
             if (playerMode === 'android') element.launch_player = 'android'
 
             Lampa.Player.play(element)
             Lampa.Player.callback(function () { Lampa.Controller.toggle('content') })
-            Lampa.Player.playlist(files.map(function (f) {
-                var findex = typeof f.id !== 'undefined' ? f.id : files.indexOf(f)
-                var furl = Lampa.Torserver && Lampa.Torserver.stream
-                    ? Lampa.Torserver.stream(shortName(f.path), hash, findex).replace('&preload', '&play')
-                    : base + '/stream/' + encodeURIComponent(shortName(f.path)) + '?link=' + hash + '&index=' + findex + '&play'
-                return { title: shortName(f.path), url: furl, torrent_hash: hash }
-            }))
         }
 
         function getVideoFiles(base, hash, done, fail) {
