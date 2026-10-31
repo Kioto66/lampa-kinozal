@@ -1,4 +1,4 @@
-(function () {
+﻿(function () {
     'use strict'
 
     if (window.lampa_pl_ready) return
@@ -7,7 +7,7 @@
     var NS = 'lampa_pl_'
     var COMPONENT = 'lampa_pl_list'
     var NAME = 'Pornolab'
-    var DEFAULT_PROXY_URL = 'http://192.168.11.71:8787'
+    var DEFAULT_PROXY_URL = 'http://192.168.11.144:8787'
     var PAGE_LIMIT = 50
 
     var SECTIONS = [

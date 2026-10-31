@@ -1,4 +1,4 @@
-(function () {
+﻿(function () {
     'use strict'
 
     if (window.lampa_rt_ready) return
@@ -7,7 +7,7 @@
     var NS = 'lampa_rt_'
     var NAME = 'RuTracker'
     var COMPONENT = 'lampa_rt_list'
-    var DEFAULT_PROXY_URL = 'http://192.168.11.71:8787'
+    var DEFAULT_PROXY_URL = 'http://192.168.11.144:8787'
     var PAGE_LIMIT = 60
 
     var SECTIONS = [

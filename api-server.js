@@ -52,6 +52,40 @@ let browserLastRequestAt = 0
 let browserQueue = Promise.resolve()
 const browserCache = new Map()
 
+// Chrome умер/перезапустился (смена IP, ребут роутера, закрыли окно) —
+// сбрасываем ВСЕ браузерные сессии (Кинозал, RT, PL), следующий запрос
+// переподключится по CDP и пересоздаст вкладки. Имена rt*/pl* объявлены
+// ниже по файлу, но функция вызывается только на живых запросах.
+function resetBrowserState() {
+    browserContextPromise = null
+    browserPagePromise = null
+    browserConnection = null
+    rtPageList = null
+    rtPagesCard.length = 0
+    rtPagesReady = null
+    rtOriginWarm = false
+    rtPageChains.clear()
+    plPageCard = null
+    plPageList = null
+    plPagesReady = null
+    plPageChain = Promise.resolve()
+    plListChain = Promise.resolve()
+}
+
+// Признаки мёртвой сессии Playwright после смерти браузера
+const DEAD_SESSION_RE = /Target page, context or browser has been closed|Target closed|Session closed|Browser has been closed/i
+
+// Один автоматический ретрай: сбрасываем сессии и выполняем запрос заново
+async function withBrowserRetry(fn) {
+    try {
+        return await fn()
+    } catch (error) {
+        if (!DEAD_SESSION_RE.test(String((error && error.message) || error))) throw error
+        resetBrowserState()
+        return await fn()
+    }
+}
+
 function loadItems() {
     const payload = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'))
     return Array.isArray(payload.results) ? payload.results : []
@@ -163,9 +197,10 @@ async function getBrowserPage() {
             let context
             if (BROWSER_CDP_URL) {
                 browserConnection = await playwright.chromium.connectOverCDP(BROWSER_CDP_URL)
+                browserConnection.on('disconnected', resetBrowserState)
                 context = browserConnection.contexts()[0]
                 if (!context) throw new Error('В отдельном Chrome не найден браузерный контекст')
-                context.on('close', () => { browserContextPromise = null; browserPagePromise = null; browserConnection = null })
+                context.on('close', resetBrowserState)
             } else {
                 context = await playwright.chromium.launchPersistentContext(BROWSER_PROFILE, {
                     executablePath: CHROME_PATH,
@@ -178,6 +213,9 @@ async function getBrowserPage() {
             }
             return context
         })()
+        // Не кэшируем неудачное подключение: Chrome мог быть ещё не готов —
+        // следующий запрос попробует снова
+        browserContextPromise.catch(() => { browserContextPromise = null; browserPagePromise = null })
     }
     const context = await browserContextPromise
     if (!browserPagePromise) {
@@ -291,7 +329,7 @@ async function fetchBrowserTop(category, period) {
         if (fresh && Date.now() - fresh.at < BROWSER_CACHE_TTL_MS) return fresh.payload
         const waitFor = BROWSER_MIN_INTERVAL_MS - (Date.now() - browserLastRequestAt)
         if (waitFor > 0) await wait(waitFor)
-        const payload = await loadBrowserTop(category, period)
+        const payload = await withBrowserRetry(() => loadBrowserTop(category, period))
         browserLastRequestAt = Date.now()
         browserCache.set(key, { at: browserLastRequestAt, payload })
         return payload
@@ -490,8 +528,20 @@ async function rtEnsurePages() {
 async function rtNavigate(page, url) {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 })
     await page.waitForTimeout(700)
-    const html = await page.content()
-    if (/Just a moment/i.test(html)) throw new Error('RuTracker просит проверку Cloudflare — открой окно проекта Chrome и пройди её вручную')
+    let html = await page.content()
+    // Cloudflare: до 3 попыток сами клацаем галочку Turnstile (проверка часто
+    // возникает после смены IP). Не пропустило — просим пройти вручную.
+    for (let attempt = 0; attempt < 3 && /Just a moment|Один момент/i.test(html); attempt++) {
+        const frame = page.frames().find(f => /challenges\.cloudflare\.com/.test(f.url()))
+        if (frame) {
+            const box = await frame.locator('input[type="checkbox"], .ctp-checkbox-label, label').first().boundingBox().catch(() => null)
+            if (box) await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2).catch(() => {})
+        }
+        await page.waitForTimeout(3000)
+        html = await page.content()
+    }
+    if (/Just a moment|Один момент/i.test(html)) throw new Error('RuTracker просит проверку Cloudflare — открой окно проекта Chrome и пройди её вручную')
+    await page.waitForTimeout(700)
     return html
 }
 
@@ -521,7 +571,7 @@ async function rtFetchHtml(url, isCard) {
                 const bytes = await r.arrayBuffer()
                 return new TextDecoder('windows-1251').decode(bytes)
             }, url)
-            if (html && !/Just a moment/i.test(html)) return html
+            if (html && !/Just a moment|Один момент/i.test(html)) return html
         } catch (e) { /* упадём в медленную навигацию */ }
         // Резерв: полноценная навигация вкладки (page.content() декодирует сам)
         return rtNavigate(page, url)
@@ -1175,7 +1225,7 @@ const server = http.createServer(async (req, res) => {
         const limit = Math.min(80, Math.max(10, Number(url.searchParams.get('limit') || 60) || 60))
         const page = Math.max(1, Number(url.searchParams.get('page') || 1) || 1)
         try {
-            const items = await rtList(section)
+            const items = await withBrowserRetry(() => rtList(section))
             return sendJson(res, 200, proxyPosters(req.headers.host, pageOf(items, page, limit)))
         } catch (error) {
             return sendJson(res, 502, { ok: false, message: error.message || 'Не удалось получить раздел RuTracker' })
@@ -1186,7 +1236,7 @@ const server = http.createServer(async (req, res) => {
         const topicId = String(url.searchParams.get('t') || '').replace(/\D/g, '')
         if (!topicId) return sendJson(res, 400, { ok: false, message: 'Нет id темы' })
         try {
-            const card = await rtCard(topicId)
+            const card = await withBrowserRetry(() => rtCard(topicId))
             card.poster = card.poster ? proxyImageUrl(req.headers.host, card.poster) : ''
             return sendJson(res, 200, card)
         } catch (error) {
@@ -1200,7 +1250,7 @@ const server = http.createServer(async (req, res) => {
         const limit = Math.min(50, Math.max(10, Number(url.searchParams.get('limit') || 50) || 50))
         const page = Math.max(1, Number(url.searchParams.get('page') || 1) || 1)
         try {
-            const items = await plList(section)
+            const items = await withBrowserRetry(() => plList(section))
             return sendJson(res, 200, proxyPosters(req.headers.host, pageOf(items, page, limit)))
         } catch (error) {
             return sendJson(res, 502, { ok: false, message: error.message || 'Не удалось получить раздел Pornolab' })
@@ -1212,7 +1262,7 @@ const server = http.createServer(async (req, res) => {
         if (!topicId) return sendJson(res, 400, { ok: false, message: 'Нет id темы' })
         const light = url.searchParams.get('light') === '1'
         try {
-            const card = light ? await plCardLight(topicId) : await plCard(topicId)
+            const card = light ? await withBrowserRetry(() => plCardLight(topicId)) : await withBrowserRetry(() => plCard(topicId))
             card.poster = card.poster ? proxyImageUrl(req.headers.host, card.poster) : ''
             return sendJson(res, 200, card)
         } catch (error) {

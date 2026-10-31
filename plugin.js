@@ -1,4 +1,4 @@
-(function () {
+﻿(function () {
     'use strict'
 
     if (window.lampa_kinozal_proto_ready) return
@@ -8,7 +8,7 @@
     var COMPONENT = 'lampa_kinozal_proto'
     // Default address of the local API on the home network. It can still be
     // changed in settings if the computer receives another LAN address.
-    var DEFAULT_PROXY_URL = 'http://192.168.11.71:8787'
+    var DEFAULT_PROXY_URL = 'http://192.168.11.144:8787'
     // TorrServer runs on the TV box itself, so localhost is the default here.
     var DEFAULT_TORR_URL = 'http://127.0.0.1:8090'
     var PAGE_LIMIT = 50
