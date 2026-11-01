@@ -351,8 +351,9 @@ function sendJson(res, status, payload) {
 }
 
 /*
- * NM (NNM-Club) — витрины новинок через portal.php?c=<id>, анонимно,
- * без браузера. Постеры идут через общий /img прокси.
+ * NM (NNM-Club) — витрины новинок через portal.php?c=<id>, через проектный
+ * Chrome (с 01.11.2026 сайт за Cloudflare, анонимный fetch не проходит).
+ * Постеры идут через общий /img прокси.
  * Раздел = одна или несколько категорий портала (карточки сливаются).
  */
 const NM_BASE = (process.env.NNM_BASE_URL || 'https://nnmclub.to').replace(/\/$/, '')
@@ -366,6 +367,50 @@ const NM_SECTIONS = Object.freeze({
 })
 const NM_CACHE_TTL_MS = Math.max(0, Number(process.env.NNM_CACHE_TTL_MS || 300000))
 const nmCache = new Map()
+
+/*
+ * NM через проектный Chrome: с 01.11.2026 nnmclub.to закрылся за
+ * Cloudflare-челленджем (голый fetch ловит 403 «Just a moment» на всё).
+ * Ходим вкладкой того же Chrome, что и RT/PL: Turnstile клацаем сами,
+ * не пропустило — просим пройти вручную в окне проектного Chrome.
+ */
+let nmPage = null
+let nmPageReady = null
+let nmLastError = ''
+
+async function nmEnsurePage() {
+    if (nmPageReady) return nmPageReady
+    nmPageReady = (async () => {
+        const page = await getBrowserPage()
+        const ctx = page.context()
+        // Подчищаем NM-вкладки прошлых запусков сервера
+        for (const p of ctx.pages()) {
+            if (/nnmclub\.to/.test(p.url())) await p.close().catch(() => {})
+        }
+        nmPage = await ctx.newPage()
+    })().catch(e => { nmPageReady = null; throw e })
+    return nmPageReady
+}
+
+async function nmNavigate(page, url) {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 })
+    await page.waitForTimeout(700)
+    let html = await page.content()
+    // Cloudflare: до 3 попыток клацаем галочку Turnstile (возникает после
+    // смены IP или истечения cf_clearance)
+    for (let attempt = 0; attempt < 3 && /Just a moment|Один момент/i.test(html); attempt++) {
+        const frame = page.frames().find(f => /challenges\.cloudflare\.com/.test(f.url()))
+        if (frame) {
+            const box = await frame.locator('input[type="checkbox"], .ctp-checkbox-label, label').first().boundingBox().catch(() => null)
+            if (box) await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2).catch(() => {})
+        }
+        await page.waitForTimeout(3000)
+        html = await page.content()
+    }
+    if (/Just a moment|Один момент/i.test(html)) throw new Error('NNM-Club просит проверку Cloudflare — открой окно проектного Chrome (RDP на miniPC) и пройди её вручную')
+    await page.waitForTimeout(500)
+    return html
+}
 
 function nmDecodeHtml(s) {
     return String(s || '')
@@ -425,13 +470,13 @@ async function nmLoadSection(sectionId, days) {
         const url = `${NM_BASE}/forum/portal.php?c=${categoryId}`
         let html
         try {
-            const response = await fetch(url, {
-                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131', 'Accept-Language': 'ru-RU,ru;q=0.9' },
-                signal: AbortSignal.timeout(25000)
-            })
-            if (!response.ok) continue
-            html = new TextDecoder('windows-1251').decode(Buffer.from(await response.arrayBuffer()))
-        } catch (error) { continue }
+            await nmEnsurePage()
+            html = await nmNavigate(nmPage, url)
+            nmLastError = ''
+        } catch (error) {
+            nmLastError = error.message || String(error)
+            continue
+        }
         for (const card of nmParsePortal(html)) {
             if (seenIds.has(card.id)) continue
             seenIds.add(card.id)
@@ -1277,7 +1322,10 @@ const server = http.createServer(async (req, res) => {
         const page = Math.max(1, Number(url.searchParams.get('page') || 1) || 1)
         try {
             const items = await nmSection(section, NM_SECTIONS[section])
-            return sendJson(res, 200, proxyPosters(req.headers.host, pageOf(items, page, limit)))
+            const payload = proxyPosters(req.headers.host, pageOf(items, page, limit))
+            // Подсказка вместо немой пустоты: почему список мог оказаться пустым
+            if (Array.isArray(payload.results) && !payload.results.length && nmLastError) payload.notice = nmLastError
+            return sendJson(res, 200, payload)
         } catch (error) {
             return sendJson(res, 502, { ok: false, message: error.message || 'Не удалось получить витрину NNM-Club' })
         }
