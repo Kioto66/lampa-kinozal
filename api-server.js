@@ -377,6 +377,7 @@ const nmCache = new Map()
 let nmPage = null
 let nmPageReady = null
 let nmLastError = ''
+let nmBusy = false // идёт пользовательская загрузка раздела — прогрев ждёт
 
 async function nmEnsurePage() {
     if (nmPageReady) return nmPageReady
@@ -463,6 +464,15 @@ function nmIsSeries(title) {
 }
 
 async function nmLoadSection(sectionId, days) {
+    nmBusy = true
+    try {
+        return await nmLoadSectionInner(sectionId, days)
+    } finally {
+        nmBusy = false
+    }
+}
+
+async function nmLoadSectionInner(sectionId, days) {
     const results = []
     const seenIds = new Set()
     const byKey = new Map()
@@ -1362,6 +1372,46 @@ server.listen(PORT, HOST, () => {
     if (SOURCE === 'browser' && !BROWSER_CDP_URL) console.log(`Browser profile: ${BROWSER_PROFILE}`)
     if (SOURCE === 'browser' && BROWSER_CDP_URL) console.log(`Attached project Chrome: ${BROWSER_CDP_URL}`)
 })
+
+/*
+ * Прогрев Cloudflare-пропусков. cf_clearance выдаётся на ~1 год, но
+ * сбрасывается при смене внешнего IP (ребут роутера, провайдер). Раз в
+ * TRACKERS_WARMUP_MS тихо открываем страницы NNM и RT в проектном Chrome:
+ * челлендж решается автокликом, пока пользователя нет; не пропустило —
+ * вкладка остаётся на челлендже, причина видна в журнале (lampa-control.sh logs).
+ */
+const TRACKERS_WARMUP_MS = Math.max(0, Number(process.env.TRACKERS_WARMUP_MS || 3600000))
+let rtWarmPage = null // отдельная вкладка RT для прогрева — не трогаем рабочие
+
+async function warmTrackers() {
+    // NNM
+    try {
+        if (nmBusy) throw new Error('занят пользовательским запросом, прогрев отложен')
+        await nmEnsurePage()
+        await nmNavigate(nmPage, NM_BASE + '/forum/portal.php?c=10')
+        console.log('[warmup] NNM: ок, пропуск жив')
+    } catch (error) {
+        console.log('[warmup] NNM:', error.message || error)
+    }
+    // RT
+    try {
+        const page = await getBrowserPage()
+        if (!rtWarmPage || rtWarmPage.isClosed()) rtWarmPage = await page.context().newPage()
+        await rtNavigate(rtWarmPage, RT_BASE + '/forum/index.php')
+        console.log('[warmup] RT: ок, пропуск жив')
+    } catch (error) {
+        console.log('[warmup] RT:', error.message || error)
+    }
+}
+
+if (TRACKERS_WARMUP_MS > 0) {
+    const timer = setInterval(() => { warmTrackers().catch(() => {}) }, TRACKERS_WARMUP_MS)
+    if (timer.unref) timer.unref()
+    // первый прогрев через 30 с после старта (Chrome мог ещё подниматься)
+    const first = setTimeout(() => { warmTrackers().catch(() => {}) }, 30000)
+    if (first.unref) first.unref()
+    console.log(`[warmup] прогрев трекеров каждые ${Math.round(TRACKERS_WARMUP_MS / 60000)} мин`)
+}
 
 process.on('SIGINT', async () => {
     try {
