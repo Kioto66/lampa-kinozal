@@ -186,6 +186,20 @@
 
         var comp = Lampa.Maker.make('Category', { title: NAME, page: 1 })
 
+        function loadPoster(card, data, attempt) {
+            var idx = chainIdx++ % chains.length
+            chains[idx] = chains[idx].then(function () {
+                return provider.cardLight(data.pl_id).then(function (info) {
+                    if (info.poster) setPoster(card, data, info.poster)
+                    if (info.overview && !data.overview) data.overview = info.overview
+                })
+            }).catch(function () {
+                if (attempt < 1 && !data.poster) {
+                    setTimeout(function () { loadPoster(card, data, attempt + 1) }, 40000)
+                }
+            })
+        }
+
         comp.use({
             onCreate: function () {
                 this.activity.loader(true)
@@ -207,16 +221,11 @@
                 card.use({
                     onlyEnter: function () { openCard(data) }
                 })
-                // Постеры лежат внутри тем — догружаем лениво, до 50 карточек
+                // Постеры лежат внутри тем — догружаем лениво, до 50 карточек.
+                // Сорвавшийся постер (лимит Pornolab, сеть) пробуем ещё раз через 40 сек
                 if (data.pl_id && !data.poster && posterBudget > 0) {
                     posterBudget--
-                    var idx = chainIdx++ % chains.length
-                    chains[idx] = chains[idx].then(function () {
-                        return provider.cardLight(data.pl_id).then(function (info) {
-                            if (info.poster) setPoster(card, data, info.poster)
-                            if (info.overview && !data.overview) data.overview = info.overview
-                        })
-                    }).catch(function () { })
+                    loadPoster(card, data, 0)
                 }
             }
         })

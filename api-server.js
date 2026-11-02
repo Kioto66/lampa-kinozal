@@ -731,7 +731,6 @@ async function rtCard(topicId) {
  * проекта Chrome (магнит на странице не показывается, считаем infohash из .torrent).
  */
 const PL_BASE = (process.env.PL_BASE_URL || 'https://pornolab.net/forum').replace(/\/$/, '')
-const PL_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131 Safari/537.36'
 const PL_LIST_TTL_MS = Math.max(0, Number(process.env.PL_LIST_TTL_MS || 300000))
 const PL_CARD_TTL_MS = Math.max(0, Number(process.env.PL_CARD_TTL_MS || 1800000))
 const PL_LIST_LIMIT = 50
@@ -753,15 +752,6 @@ function plDecodeHtml(s) {
     return String(s || '')
         .replace(/&#(\d+);/g, (_, c) => String.fromCodePoint(+c))
         .replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ')
-}
-
-async function plFetchHtml(url) {
-    const response = await fetch(url, {
-        headers: { 'User-Agent': PL_UA, 'Accept-Language': 'ru-RU,ru;q=0.9' },
-        signal: AbortSignal.timeout(30000)
-    })
-    if (!response.ok) throw new Error(`Pornolab HTTP ${response.status}`)
-    return new TextDecoder('windows-1251').decode(Buffer.from(await response.arrayBuffer()))
 }
 
 // Релизы-«картинки» (фотосеты) не воспроизводятся через TorrServer — в списки не берём.
@@ -881,10 +871,11 @@ async function plList(section) {
 
     let items = []
     if (section === 'week' || section === 'month') {
-        const forumHtml = await plFetchHtml(`${PL_BASE}/viewforum.php?f=489`)
+        // Через залогиненную вкладку: анонимные запросы Pornolab лимитирует (HTTP 429)
+        const forumHtml = await plFetchLogged(`${PL_BASE}/viewforum.php?f=489`)
         const topicId = plFindChartTopic(forumHtml, section)
         if (!topicId) throw new Error('Не нашёл тему чарта (' + (section === 'week' ? 'неделя' : 'месяц') + ') на Pornolab')
-        items = plParseChart(await plFetchHtml(`${PL_BASE}/viewtopic.php?t=${topicId}`))
+        items = plParseChart(await plFetchLogged(`${PL_BASE}/viewtopic.php?t=${topicId}`))
     } else {
         const forum = PL_FORUMS[section]
         if (!forum) throw new Error('Неизвестный раздел PL: ' + section)
@@ -959,31 +950,9 @@ function plTorrentMagnet(buf) {
     return magnet
 }
 
-/*
- * Лёгкая карточка: постер и описание читаются анонимно (темы видны гостю),
- * без браузера. Ограничиваем параллелизм, чтобы не долбить Pornolab.
- */
-const PL_FETCH_CONCURRENCY = 6
-let plFetchActive = 0
-const plFetchQueue = []
-
-async function plWithSlot(run) {
-    if (plFetchActive >= PL_FETCH_CONCURRENCY) {
-        await new Promise(resolve => plFetchQueue.push(resolve))
-    }
-    plFetchActive++
-    try {
-        return await run()
-    } finally {
-        plFetchActive--
-        const next = plFetchQueue.shift()
-        if (next) next()
-    }
-}
-
 // Первый пост темы: от маркера post_body до <!--/post_body--> (ленивый регэксп
 // обрезался на внутреннем <div class="mc-note"> и терял постер/описание).
-// Постер у гостя лежит в <var class="postImg" title="URL">.
+// Постер лежит в <var class="postImg" title="URL"> (у залогиненного — <img class="postImg">).
 function plParseTopicParts(html) {
     const pbStart = html.indexOf('post_body" id="p-')
     const pbEnd = pbStart >= 0 ? html.indexOf('post_body-->', pbStart) : -1
@@ -994,14 +963,31 @@ function plParseTopicParts(html) {
     return { poster: poster.trim(), overview: desc.slice(0, 700) }
 }
 
+/*
+ * Всё читаем залогиненной вкладкой (проектный Chrome): Pornolab стал лимитировать
+ * гостевые анонимные запросы — HTTP 429, из-за этого в ноябре пропали постеры
+ * на сетке. Залогиненная сессия не лимитируется, там же ходят списки и карточки.
+ * Сериализация через plPageChain — вкладка одна, гонок не создаём.
+ */
+async function plFetchTopicLogged(topicId) {
+    await plEnsurePage()
+    const run = plPageChain.then(async () => {
+        return plPageCard.evaluate(async (t) => {
+            const r = await fetch(`/forum/viewtopic.php?t=${t}`, { credentials: 'include' })
+            const bytes = await r.arrayBuffer()
+            return new TextDecoder('windows-1251').decode(bytes)
+        }, topicId)
+    })
+    plPageChain = run.catch(() => '')
+    return run
+}
+
 async function plCardLight(topicId) {
     const key = 'l' + topicId
     const cached = plCardCache.get(key)
     if (cached && Date.now() - cached.at < PL_CARD_TTL_MS) return cached.payload
-    const payload = await plWithSlot(async () => {
-        const html = await plFetchHtml(`${PL_BASE}/viewtopic.php?t=${topicId}`)
-        return plParseTopicParts(html)
-    })
+    const html = await plFetchTopicLogged(topicId)
+    const payload = plParseTopicParts(html)
     plCardCache.set(key, { at: Date.now(), payload })
     return payload
 }
