@@ -367,7 +367,7 @@
                 var u = Lampa.Torserver.url()
                 if (u) return u.replace(/\/$/, '')
             }
-            return (safeHttpUrl(field('torr_url', 'http://127.0.0.1:8090')) || '').replace(/\/$/, '')
+            return (safeHttpUrl(field('torr_url', 'http://192.168.11.145:8090')) || '').replace(/\/$/, '')
         }
 
         function shortName(path) {
@@ -632,7 +632,7 @@
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'section', type: 'select', values: { week: 'Популярное за неделю', month: 'Популярное за месяц', siterips: 'Сайтрипы 2026', siterips_hd: 'Сайтрипы 2026 (HD)', siterips_ru: 'Сайтрипы с русскими актрисами', siterips_ru_hd: 'Сайтрипы с русскими актрисами (HD)', gangbang: 'Гэнг-бэнг', fisting: 'Фистинг и дилдо' }, default: 'week' }, field: { name: 'Раздел' } })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'proxy_url', type: 'input', values: '', default: DEFAULT_PROXY_URL }, field: { name: 'URL локального API', description: 'По умолчанию: ' + DEFAULT_PROXY_URL } })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'player', type: 'select', values: { auto: 'Авто (MKV/торренты — Android-плеер)', lampa: 'Всегда внутренний плеер LAMPA', android: 'Всегда Android-плеер' }, default: 'auto' }, field: { name: 'Плеер', description: 'Android-плеер корректно читает MKV с DTS/TrueHD' } })
-        Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'torr_url', type: 'input', values: '', default: 'http://127.0.0.1:8090' }, field: { name: 'TorrServer', description: 'Если не задан в настройках LAMPA' } })
+        Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'torr_url', type: 'input', values: '', default: 'http://192.168.11.145:8090' }, field: { name: 'TorrServer', description: 'Если не задан в настройках LAMPA (по умолчанию: 192.168.11.145:8090)' } })
     }
 
     function addMenuItem() {

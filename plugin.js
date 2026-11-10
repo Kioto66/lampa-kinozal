@@ -9,8 +9,8 @@
     // Default address of the local API on the home network. It can still be
     // changed in settings if the computer receives another LAN address.
     var DEFAULT_PROXY_URL = 'http://192.168.11.144:8787'
-    // TorrServer runs on the TV box itself, so localhost is the default here.
-    var DEFAULT_TORR_URL = 'http://127.0.0.1:8090'
+    // TorrServer lives on the miniPC as a macvlan container (192.168.11.145).
+    var DEFAULT_TORR_URL = 'http://192.168.11.145:8090'
     var PAGE_LIMIT = 50
 
     var TOP_CATEGORIES = [
@@ -94,6 +94,17 @@
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
+    }
+
+    function shortName(path) {
+        return String(path || '').split('/').pop().split('\\').pop()
+    }
+
+    function humanSize(bytes) {
+        var v = Number(bytes) || 0
+        if (v > 1073741824) return (v / 1073741824).toFixed(2) + ' GB'
+        if (v > 1048576) return (v / 1048576).toFixed(0) + ' MB'
+        return (v / 1024).toFixed(0) + ' KB'
     }
 
     function normalize(item) {
@@ -582,8 +593,66 @@
             body.append(btn)
         }
 
-        addButton('Передать в TorrServer', function () {
-            torr.send(item, function () { notify('Раздача передана') }, function (message) { notify(message, true) })
+        /*
+         * Воспроизведение файла раздачи: адрес потока — через Lampa.Torserver.stream
+         * (учитывает транскодинг), иначе напрямую /stream. Плейлист — внутри элемента
+         * запуска (как в NM/RT/PL), torrent_hash включает автопереход на Android-плеер.
+         */
+        function playFile(hash, file, files) {
+            var base = torr.endpoint
+            var index = typeof file.id !== 'undefined' ? file.id : files.indexOf(file)
+            var name = shortName(file.path)
+
+            var url
+            if (Lampa.Torserver && Lampa.Torserver.stream) {
+                url = Lampa.Torserver.stream(name, hash, index).replace('&preload', '&play')
+            } else {
+                url = base + '/stream/' + encodeURIComponent(name) + '?link=' + hash + '&index=' + index + '&play'
+            }
+
+            var playlist = files.map(function (f) {
+                var findex = typeof f.id !== 'undefined' ? f.id : files.indexOf(f)
+                var fname = shortName(f.path)
+                var furl = Lampa.Torserver && Lampa.Torserver.stream
+                    ? Lampa.Torserver.stream(fname, hash, findex).replace('&preload', '&play')
+                    : base + '/stream/' + encodeURIComponent(fname) + '?link=' + hash + '&index=' + findex + '&play'
+                return { title: f.path_human || fname, url: furl, torrent_hash: hash }
+            })
+
+            Lampa.Player.play({ title: item.title, url: url, torrent_hash: hash, playlist: playlist })
+            Lampa.Player.callback(function () { Lampa.Controller.toggle('content') })
+        }
+
+        // Список файлов раздачи (упрощённый аналог NM: body/scroll того же экрана)
+        function showFileList(files, hash) {
+            last = false
+            body.empty()
+            try { if (Lampa.Torserver && Lampa.Torserver.clearFileName) Lampa.Torserver.clearFileName(files) } catch (e) { }
+
+            body.append('<h2 style="color:#fff;font-size:1.4em;margin:1em 1.5em .5em">Файлы раздачи (' + files.length + ')</h2>')
+            files.slice(0, 300).forEach(function (f) {
+                var fname = f.path_human || shortName(f.path)
+                var btn = $('<div class="settings-param selector"><div class="settings-param-name">' + escapeHtml(fname) + '</div><div class="settings-param-value">' + humanSize(f.length) + '</div></div>')
+                btn.on('hover:focus', function () {
+                    last = btn
+                    scroll.update(btn)
+                })
+                btn.on('hover:enter', function () { playFile(hash, f, files) })
+                body.append(btn)
+            })
+            scroll.reset()
+            Lampa.Controller.toggle('content')
+        }
+
+        addButton('Смотреть (TorrServer)', function () {
+            if (!Lampa.Player || !Lampa.Player.play) return notify('Плеер LAMPA недоступен в этой версии', true)
+            notify('Добавляю раздачу в TorrServer…')
+            torr.add(item, function (hash) {
+                torr.files(hash, function (files) {
+                    if (files.length === 1) return playFile(hash, files[0], files)
+                    showFileList(files, hash)
+                }, function (message) { notify(message, true) })
+            }, function (message) { notify(message, true) })
         })
 
         addButton('Показать magnet', function () {
@@ -633,23 +702,66 @@
         this.destroy = function () { torr.clear(); scroll.destroy() }
     }
 
+    /*
+     * Работа с TorrServer напрямую (как в NM/RT/PL): добавление раздачи
+     * (POST /torrents, action:add) и опрос file_stats, пока догружаются
+     * метаданные магнита. Реальный TorrServer по адресу endpoint.
+     */
+    var TORR_VIDEO_EXT = ['mp4', 'mkv', 'avi', 'ts', 'm2ts', 'mov', 'flv', 'webm', 'wmv', 'mpg', 'mpeg', 'm4v', 'vob']
+
     function TorrAdapter(endpoint) {
         this.endpoint = safeHttpUrl(endpoint).replace(/\/$/, '')
         this.network = new Lampa.Reguest()
-        this.network.timeout(15000)
+        this.network.timeout(30000)
+        this.closed = false
     }
-    TorrAdapter.prototype.send = function (item, done, fail) {
+    TorrAdapter.prototype.add = function (item, done, fail) {
+        var self = this
         if (!this.endpoint) return fail('Не указан адрес TorrServer')
         if (!item.magnet) return fail('У карточки нет корректной magnet-ссылки')
-        this.network.silent(this.endpoint + '/v1/torrents', done, function () {
+        this.network.silent(this.endpoint + '/torrents', function (torrent) {
+            var hash = torrent && torrent.hash
+            if (!hash) return fail('TorrServer не принял раздачу')
+            done(hash)
+        }, function () {
             fail('TorrServer не принял раздачу')
-        }, {
-            magnet: item.magnet,
+        }, JSON.stringify({
+            action: 'add',
+            link: item.magnet,
             title: item.title,
-            poster: item.poster || ''
-        })
+            poster: item.poster || '',
+            save_to_db: false
+        }))
     }
-    TorrAdapter.prototype.clear = function () { this.network.clear() }
+    TorrAdapter.prototype.files = function (hash, done, fail) {
+        var self = this
+        var attempt = 0
+
+        function extract(json) {
+            return ((json || {}).file_stats || []).filter(function (f) {
+                return TORR_VIDEO_EXT.indexOf(String(f.path).split('.').pop().toLowerCase()) >= 0
+            })
+        }
+
+        function tick() {
+            if (self.closed) return
+            attempt++
+            if (attempt > 15) return fail('Раздача не загружается: нет данных от TorrServer (возможно, нет сидов)')
+            self.network.silent(self.endpoint + '/torrents', function (json) {
+                if (self.closed) return
+                var files = extract(json)
+                if (files.length) return done(files)
+                notify('Раздача загружается… ' + attempt * 2 + ' c')
+                setTimeout(tick, 2000)
+            }, function () {
+                if (self.closed) return
+                setTimeout(tick, 2000)
+            }, JSON.stringify({ action: 'get', hash: hash }))
+        }
+
+        tick()
+    }
+    TorrAdapter.prototype.clear = function () { this.closed = true; this.network.clear() }
 
     function registerSettings() {
         if (!Lampa.SettingsApi || !Lampa.SettingsApi.addComponent || !Lampa.SettingsApi.addParam) return
