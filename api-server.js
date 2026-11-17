@@ -119,19 +119,21 @@ function parseTitle(title) {
 }
 
 function parseTopPage(html) {
+    // С 11.2026 Кинозал сверстал топ дивами (collection-works) — таблицы
+    // .stable больше нет. Ищем блок .stable (старая вёрстка), иначе весь
+    // документ: itemRe требует у ссылки title + img, посторонние
+    // details-ссылки (меню, пагинация) под него не подпадают.
     const stable = html.match(/<div[^>]*class=["'][^"']*\bstable\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/i)
-    if (!stable) {
-        if (/cf-chl-|challenge-platform|Выполнение проверки безопасности|Just a moment/i.test(html)) {
-            throw new Error('Kinozal вернул проверку Cloudflare')
-        }
-        throw new Error('Не найден блок топа Kinozal')
+    if (!stable && /cf-chl-|challenge-platform|Выполнение проверки безопасности|Just a moment/i.test(html)) {
+        throw new Error('Kinozal вернул проверку Cloudflare')
     }
+    const scope = stable ? stable[1] : html
 
     const results = []
     const seen = new Set()
     const itemRe = /<a\s+href=["'](?:https?:\/\/kinozal\.me)?\/details\.php\?id=(\d+)["'][^>]*title=["']([^"']+)["'][^>]*>\s*<img[^>]+src=["']([^"']+)["']/gi
     let match
-    while ((match = itemRe.exec(stable[1]))) {
+    while ((match = itemRe.exec(scope))) {
         if (seen.has(match[1])) continue
         seen.add(match[1])
         const title = decodeHtml(match[2]).replace(/\s+/g, ' ').trim()
@@ -270,7 +272,10 @@ async function loadBrowserTop(category, period) {
         throw new Error('Кинозал просит проверку Cloudflare — открой окно проекта Chrome (свернуто в панели задач) и кликни галочку')
     }
 
-    await page.waitForSelector('.stable a[href*="/details.php?id="]', { timeout: 10000 })
+    // С 11.2026 Кинозал сверстал топ дивами (collection-works, класс ссылки
+    // collection-versions-toggle): объединённый селектор — старая таблица
+    // .stable или новые прямые ссылки на раздачи. Дедуп по id ниже.
+    await page.waitForSelector('.stable a[href*="/details.php?id="], a[href^="/details.php?id="]', { timeout: 10000 })
     const results = await page.evaluate((base) => {
         function absolute(value) {
             try { return new URL(value, base).toString() } catch (error) { return '' }
@@ -287,7 +292,7 @@ async function loadBrowserTop(category, period) {
             }
         }
         const seen = new Set()
-        return Array.from(document.querySelectorAll('.stable a[href*="/details.php?id="]')).map(anchor => {
+        return Array.from(document.querySelectorAll('.stable a[href*="/details.php?id="], a[href^="/details.php?id="]')).map(anchor => {
             const match = (anchor.getAttribute('href') || '').match(/[?&]id=(\d+)/)
             const image = anchor.querySelector('img')
             const rawTitle = (anchor.getAttribute('title') || anchor.textContent || '').replace(/\s+/g, ' ').trim()
@@ -1118,11 +1123,26 @@ function imageFilePath(urlKey) {
     return path.join(IMG_CACHE_DIR, crypto.createHash('sha1').update(urlKey).digest('hex'))
 }
 
+// Hotlink-защита: nnmstatic.win (редиректор постеров NNM-Club, с 11.2026
+// за Cloudflare) пускает картинки только с реферером сайта клуба.
+const IMAGE_REFERER_HOSTS = Object.freeze({
+    'nnmstatic.win': 'https://nnmclub.to/'
+})
+
+function imageReferer(target) {
+    const host = (target.hostname || '').toLowerCase()
+    for (const [suffix, referer] of Object.entries(IMAGE_REFERER_HOSTS)) {
+        if (host === suffix || host.endsWith('.' + suffix)) return referer
+    }
+    return ''
+}
+
 async function downloadImage(target) {
     const response = await fetch(target.toString(), {
         headers: {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
-            'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8'
+            'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+            ...(imageReferer(target) ? { 'Referer': imageReferer(target) } : {})
         },
         redirect: 'follow',
         signal: AbortSignal.timeout(20000)
