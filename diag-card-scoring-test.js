@@ -76,6 +76,71 @@ function check(label, got, want) {
     console.log((ok ? 'OK  ' : 'FAIL') + ' ' + label + ' -> ' + got + (ok ? '' : ' (ожидалось: ' + want + ')'))
 }
 
+// ===== Парсер сырых тайтлов (зеркало parseTorrentTitle из api-server.js) =====
+var TITLE_QUALITY_RE = /\b(WEBRip|WEB-DLRip|WEB-DL|BDRip-AVC|BDRip|BDRemux|HDTVRip|HDTV|SATRip|DVDRip|TSRip|HDRip|IPTVRip|Blu-Ray|UHD)\b.*$/i
+
+function parseTorrentTitle(raw) {
+    var s = String(raw || '').replace(/\s+/g, ' ').trim()
+    var parts = s.split(/\s+\/\s+/)
+    var original = ''
+    for (var i = 1; i < parts.length; i++) {
+        var part = parts[i]
+        if (/^(Сезон|Серии|Часть|Пакет|Главы)/i.test(part)) break
+        if (/[a-z]{3}/i.test(part) && !/[а-яё]{3}/i.test(part)) original = part
+    }
+    var yearMatch = s.match(/\[(\d{4})/) || s.match(/[({](\d{4})[})]/) || s.match(/\b(19\d{2}|20\d{2})\b/)
+    var year = yearMatch ? Number(yearMatch[1]) : ''
+    function cleanName(value) {
+        return String(value || '')
+            .replace(/\s*\[[^\]]*\]\s*/g, ' ')
+            .replace(TITLE_QUALITY_RE, ' ')
+            .replace(/\s*\([^)]*\)\s*/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+    }
+    return { search_title: cleanName(parts[0]), original_title: cleanName(original), year: year }
+}
+
+function pt(label, raw, st, ot, y) {
+    var p = parseTorrentTitle(raw)
+    check(label + ' [имя]', p.search_title, st)
+    check(label + ' [ориг]', p.original_title, ot)
+    check(label + ' [год]', String(p.year), String(y))
+}
+
+// Реальные тайтлы RT
+pt('RT Чёрный пёс', 'Чёрный пёс / Сезон: 8 / Серии: 1-4 из 4 (Владимир Янковский) [2026, боевик, детектив, WEBRip 1080p]', 'Чёрный пёс', '', 2026)
+pt('RT MobLand', 'Гангстерленд / MobLand / Сезон: 2 / Серии: 1-9 из 10 (Даниэль Сыркин, Гай Ричи) [2026, Великобритания, криминал, WEB-DL 1080p] MVO + Sub (Rus)', 'Гангстерленд', 'MobLand', 2026)
+pt('RT Яга (варианты)', 'Яга / Баба Яга / Яга: Охота на ведьм / Yaga / Сезон: 1 / Серии: 1-4 из 8 (Дэвид Фрэйзи) [2026, Канада, ужасы] Dub + Original', 'Яга', 'Yaga', 2026)
+pt('RT Полярный-17', 'Полярный (Полярный-17 ) / Сезон: 6 / Серии: 1-2 из 16 (Авет Оганесян) [2026, Комедия, HDTV 1080p]', 'Полярный', '', 2026)
+pt('RT 1812 год', '1812 год (Василий Гончаров) [1912, исторический , DVDRip]', '1812 год', '', 1912)
+pt('RT Синяя птичка (2 года)', 'Синяя птичка (Эраст Гарин) [1953, 1954, кино-фельето н, Betacam SP > DVDRemux]', 'Синяя птичка', '', 1953)
+pt('RT Мосгаз', 'Мосгаз. Южный порт (Дело №12) / Сезон: 12 / Серии: 1-4 из 8 (Евгений Звездаков) [2026, детектив, WEBRip 1080p] + Sub (Rus)', 'Мосгаз. Южный порт', '', 2026)
+
+// Реальные тайтлы NM
+pt('NM Гражданин-мститель', 'Гражданин-мститель / Citizen Vigilante (2026) UHD BDRip [H.265/2160p] [4K, HDR10, DV 8.1, 10-bit] [MVO]', 'Гражданин-мститель', 'Citizen Vigilante', 2026)
+pt('NM Быть человеком', 'Быть человеком: История Джуди Хьюман / Быть Хьюмен / Being Heumann (2026) WEB-DL [H.264/720p] [MVO]', 'Быть человеком: История Джуди Хьюман', 'Being Heumann', 2026)
+pt('NM Полярный', 'Полярный (2026) WEBRip [H.264/1080p] (сезон 6, серии 1-2 из 16)', 'Полярный', '', 2026)
+pt('NM А.Л.Ж.И.Р.', 'А.Л.Ж.И.Р. (2018) WEBRip [AV1/1080p] (сезон 1, серии 1-11 из 11)', 'А.Л.Ж.И.Р.', '', 2018)
+pt('NM Что сказал покойник', 'Что сказал покойник (1999-2000) DVDRip [H.264] (серии 1-10 из 10)', 'Что сказал покойник', '', 1999)
+pt('NM Наследник', 'Наследник / Потомок / Gwigongja (The Childe) (2023) BDRip [MVO]', 'Наследник', 'Gwigongja', 2023)
+pt('NM Хатико', "Хатико: Самый верный друг / Hachiko: A Dog's Story (2009) [H.264] BDRip", 'Хатико: Самый верный друг', "Hachiko: A Dog's Story", 2009)
+pt('NM Обновляемая', 'Огонь (2026) WEBRip [H.264] (сезон 1, серии 1-14 из 20) (обновляемая)', 'Огонь', '', 2026)
+
+// Скоринг на распарсенных тайтлах
+var pyosParsed = parseTorrentTitle('Чёрный пёс / Сезон: 8 / Серии: 1-4 из 4 (Владимир Янковский) [2026, боевик, детектив, WEBRip 1080p]')
+check('RT Чёрный пёс: русская карточка открывается', pick([
+    { id: 'ru26', name: 'Чёрный пёс', first_air_date: '2026-01-01', original_language: 'ru' },
+], { title: pyosParsed.search_title, year: pyosParsed.year, type: 'series' }, 'ru'), 'ru26')
+check('RT Чёрный пёс: чужая тёзка -> fallback', pick([
+    { id: 'old', name: 'Чёрный пёс', first_air_date: '2007-01-01', original_language: 'tr' },
+], { title: pyosParsed.search_title, year: pyosParsed.year, type: 'series' }, 'ru'), 'FALLBACK')
+
+var mobland = parseTorrentTitle('Гангстерленд / MobLand / Сезон: 2 / Серии: 1-9 из 10 (Гай Ричи) [2026, криминал, WEB-DL 1080p]')
+check('RT MobLand: по оригиналу в foreign-разделе', pick([
+    { id: 'mb', name: 'Гангстерленд', original_name: 'MobLand', first_air_date: '2025-03-30', original_language: 'en' },
+], { title: mobland.search_title, original_title: mobland.original_title, year: mobland.year, type: 'series' }, 'foreign'), 'mb')
+
 // 1. «Ищейка» (8 сезон, 2025, смешанный раздел): русская 2016 vs The Closer 2005
 var ischeyka = { title: 'Ищейка', original_title: '', year: 2025, type: 'series' }
 check('1a Ищейка: русская бьёт американскую', pick([

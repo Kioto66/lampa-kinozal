@@ -45,6 +45,18 @@ const ORIGIN_BY_CATEGORY = Object.freeze({
     series_foreign: 'foreign'
 })
 
+// То же для разделов RuTracker и NNM-Club (плагины rt.js / nm.js)
+const ORIGIN_BY_SECTION_RT = Object.freeze({
+    movies_ru: 'ru',
+    series_ru: 'ru',
+    series_foreign: 'foreign'
+})
+const ORIGIN_BY_SECTION_NM = Object.freeze({
+    series_ru: 'ru',
+    series_foreign: 'foreign',
+    movies_foreign: 'foreign'
+})
+
 const TOP_CATEGORIES = Object.freeze({
     series: 3,
     series_ru: 31,
@@ -481,6 +493,39 @@ function nmIsSeries(title) {
     return /сезон|серии\s+из|сериал/i.test(title)
 }
 
+/*
+ * Разбор сырого тайтса трекера для поиска карточек TMDB:
+ *   RT: «Чёрный пёс / Сезон: 8 / Серии: 1-4 из 4 (Режиссёр) [2026, жанры, WEBRip 1080p]»
+ *   NM: «Гражданин-мститель / Citizen Vigilante (2026) UHD BDRip [H.265/2160p] [MVO]»
+ * Возвращает чистое имя, оригинальное название (латинский сегмент) и год.
+ * Сырой title остаётся нетронутым — он отображается в сетке на ТВ.
+ */
+const TITLE_QUALITY_RE = /\b(WEBRip|WEB-DLRip|WEB-DL|BDRip-AVC|BDRip|BDRemux|HDTVRip|HDTV|SATRip|DVDRip|TSRip|HDRip|IPTVRip|Blu-Ray|UHD)\b.*$/i
+
+function parseTorrentTitle(raw) {
+    const s = String(raw || '').replace(/\s+/g, ' ').trim()
+    // Сплит строго по « / » с пробелами: слеши внутри [H.265/2160p] не разделитель
+    const parts = s.split(/\s+\/\s+/)
+    let original = ''
+    for (let i = 1; i < parts.length; i++) {
+        const part = parts[i]
+        if (/^(Сезон|Серии|Часть|Пакет|Главы)/i.test(part)) break
+        if (/[a-z]{3}/i.test(part) && !/[а-яё]{3}/i.test(part)) original = part
+    }
+    const yearMatch = s.match(/\[(\d{4})/) || s.match(/[({](\d{4})[})]/) || s.match(/\b(19\d{2}|20\d{2})\b/)
+    const year = yearMatch ? Number(yearMatch[1]) : ''
+    function cleanName(value) {
+        return String(value || '')
+            // Бракеты раньше качества: резка качества могла съесть закрывающую ]
+            .replace(/\s*\[[^\]]*\]\s*/g, ' ')
+            .replace(TITLE_QUALITY_RE, ' ')
+            .replace(/\s*\([^)]*\)\s*/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+    }
+    return { search_title: cleanName(parts[0]), original_title: cleanName(original), year }
+}
+
 async function nmLoadSection(sectionId, days) {
     nmBusy = true
     try {
@@ -510,11 +555,14 @@ async function nmLoadSectionInner(sectionId, days) {
             seenIds.add(card.id)
             if (card.title.length < 8) continue
             const key = nmBaseKey(card.title)
+            const parsedTitle = parseTorrentTitle(card.title)
             const item = {
                 id: 'nm-' + card.id,
                 nm_id: card.id,
                 title: card.title,
-                year: ((card.title.match(/\b(19\d{2}|20\d{2})\b/) || [])[0]) || '',
+                search_title: parsedTitle.search_title,
+                original_title: parsedTitle.original_title,
+                year: ((card.title.match(/\b(19\d{2}|20\d{2})\b/) || [])[0]) || parsedTitle.year || '',
                 type: nmIsSeries(card.title) ? 'series' : 'movie',
                 poster: card.poster,
                 overview: card.desc,
@@ -711,6 +759,11 @@ async function rtList(section) {
         for (const card of rtParseForum(html)) {
             // Тип нужен истории просмотров LAMPA (фильмы/сериалы): раздел надёжнее
             card.type = (RT_SECTION_TYPE[section] === 'series' || nmIsSeries(card.title)) ? 'series' : 'movie'
+            // Чистое имя/оригинал/год для поиска карточек (год у RT только здесь)
+            const parsedTitle = parseTorrentTitle(card.title)
+            card.search_title = parsedTitle.search_title
+            if (parsedTitle.original_title) card.original_title = parsedTitle.original_title
+            if (!card.year && parsedTitle.year) card.year = parsedTitle.year
             if (seenIds.has(card.id)) continue
             seenIds.add(card.id)
             const key = nmBaseKey(card.title)
@@ -1300,6 +1353,8 @@ const server = http.createServer(async (req, res) => {
         const page = Math.max(1, Number(url.searchParams.get('page') || 1) || 1)
         try {
             const items = await withBrowserRetry(() => rtList(section))
+            const rtOrigin = ORIGIN_BY_SECTION_RT[section] || ''
+            if (rtOrigin) items.forEach(item => { item.origin = rtOrigin })
             return sendJson(res, 200, proxyPosters(req.headers.host, pageOf(items, page, limit)))
         } catch (error) {
             return sendJson(res, 502, { ok: false, message: error.message || 'Не удалось получить раздел RuTracker' })
@@ -1351,6 +1406,8 @@ const server = http.createServer(async (req, res) => {
         const page = Math.max(1, Number(url.searchParams.get('page') || 1) || 1)
         try {
             const items = await nmSection(section, NM_SECTIONS[section])
+            const nmOrigin = ORIGIN_BY_SECTION_NM[section] || ''
+            if (nmOrigin) items.forEach(item => { item.origin = nmOrigin })
             const payload = proxyPosters(req.headers.host, pageOf(items, page, limit))
             // Подсказка вместо немой пустоты: почему список мог оказаться пустым
             if (Array.isArray(payload.results) && !payload.results.length && nmLastError) payload.notice = nmLastError

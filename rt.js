@@ -46,6 +46,7 @@
             id: String(item.id || item.title || Math.random()),
             rt_id: number(item.rt_id),
             title: String(item.title || item.name || 'Без названия'),
+            search_title: String(item.search_title || ''),
             original_title: String(item.original_title || ''),
             year: item.year ? number(item.year) : '',
             type: String(item.type || 'movie'),
@@ -54,7 +55,8 @@
             size: String(item.size || ''),
             seeds: number(item.seeds),
             source_url: safeHttpUrl(item.source_url || ''),
-            magnet: ''
+            magnet: '',
+            origin: String(item.origin || '')
         }
     }
 
@@ -200,47 +202,140 @@
         return (n < 10 ? '0' : '') + n
     }
 
+    /*
+     * Подбор карточки TMDB (как в plugin.js Кинозала): кандидаты всех
+     * поисковых запросов сравниваются баллом — совпадение названия (главный
+     * вес) → близость года (сериалам окно до 12 лет на сезоны) → язык.
+     * Год обязателен: в смешанных разделах это единственный страновой
+     * признак. В однозначных по стране разделах карточка обязана быть той
+     * же страны. В поиск идёт search_title (чистое имя с сервера), не
+     * сырой тайтл раздачи. Не совпало — свой экран деталей.
+     */
+    function normName(value) {
+        return String(value || '')
+            .toLowerCase()
+            .replace(/ё/g, 'е')
+            .replace(/[^0-9a-zа-я]+/gi, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+    }
+
+    function nameSimilar(a, b) {
+        if (!a || !b) return 0
+        if (a === b) return 1
+        if (a.indexOf(b) === 0 || b.indexOf(a) === 0) return 0.9
+        if (a.indexOf(b) >= 0 || b.indexOf(a) >= 0) return 0.7
+        return 0
+    }
+
+    function yearScoreFor(item, result) {
+        if (!item.year) return 0
+        var date = result.release_date || result.first_air_date || ''
+        var year = Number(String(date).slice(0, 4))
+        if (!year) return 0
+        var diff = year - Number(item.year)
+        if (item.type === 'series') {
+            if (diff <= 0 && diff >= -12) return Math.max(0.1, 1 + diff * 0.075)
+            if (diff === 1 || diff === 2) return 0.5
+            return 0
+        }
+        if (diff === 0) return 1
+        if (Math.abs(diff) === 1) return 0.5
+        return 0
+    }
+
+    function cardScore(item, result, origin) {
+        var cardTitle = normName(result.name || result.title)
+        var cardOrig = normName(result.original_name || result.original_title)
+        var nameScore = Math.max(
+            nameSimilar(cardTitle, normName(item.title)),
+            item.original_title ? nameSimilar(cardOrig, normName(item.original_title)) : 0
+        )
+        var lang = String(result.original_language || '')
+        if (origin === 'ru' && lang && lang !== 'ru') nameScore *= 0.6
+        if (origin === 'foreign' && lang === 'ru') nameScore *= 0.6
+        var langBonus = 0
+        if (origin === 'ru' && lang === 'ru') langBonus = 0.5
+        if (origin === 'foreign' && lang && lang !== 'ru') langBonus = 0.2
+        return { name: nameScore, year: yearScoreFor(item, result), lang: langBonus }
+    }
+
+    function betterScore(a, b) {
+        if (a.name !== b.name) return a.name > b.name
+        if (a.year !== b.year) return a.year > b.year
+        return a.lang > b.lang
+    }
+
     function openCard(item) {
         var native = field('native_cards', 'on') === 'on'
         var canNative = native && Lampa.Api && typeof Lampa.Api.search === 'function' && Lampa.Router && Lampa.Router.call
 
         if (!canNative) return openFallbackDetail(item)
 
+        // В поиск — чистое имя и год, вытащенные сервером из сырого тайтла
+        var searchItem = {
+            title: item.search_title || item.title,
+            original_title: item.original_title || '',
+            year: item.year || '',
+            type: item.type
+        }
+        var origin = item.origin || ''
+
+        var titles = origin === 'ru'
+            ? [cleanQuery(searchItem.title), cleanQuery(searchItem.original_title)]
+            : [cleanQuery(searchItem.original_title), cleanQuery(searchItem.title)]
         var queries = []
-        ;[cleanQuery(item.original_title), cleanQuery(item.title)].forEach(function (query) {
+        titles.forEach(function (query) {
             if (query && queries.indexOf(query) < 0) queries.push(query)
         })
         if (!queries.length) return openFallbackDetail(item)
 
+        var NAME_MIN = 0.7
+        var bestPair = null
+
+        function originOk(result) {
+            var lang = String(result.original_language || '')
+            if (origin === 'ru') return !lang || lang === 'ru'
+            if (origin === 'foreign') return !lang || lang !== 'ru'
+            return true
+        }
+
+        function finish() {
+            if (bestPair && bestPair.score.name >= NAME_MIN && bestPair.score.year > 0 && originOk(bestPair.result)) {
+                var best = bestPair.result
+                best.source = 'tmdb'
+                best.kinozal_item = item
+                Lampa.Router.call('full', best)
+            } else {
+                openFallbackDetail(item)
+            }
+        }
+
+        function consider(pool) {
+            pool.forEach(function (result) {
+                var score = cardScore(searchItem, result, origin)
+                if (!bestPair || betterScore(score, bestPair.score)) bestPair = { score: score, result: result }
+            })
+        }
+
         function trySearch(index) {
-            if (index >= queries.length) return openFallbackDetail(item)
+            if (bestPair && bestPair.score.name >= 1 && bestPair.score.year >= 0.5 && originOk(bestPair.result)) return finish()
+            if (index >= queries.length) return finish()
 
             Lampa.Api.search({ query: queries[index], page: 1 }, function (response) {
-                var wantType = item.type === 'series' ? 'tv' : 'movie'
+                var wantType = searchItem.type === 'series' ? 'tv' : 'movie'
                 var pool = []
                 collectSearchGroups(response).forEach(function (group) {
                     if (group && group.type === wantType && Array.isArray(group.results)) pool = pool.concat(group.results)
                 })
-                if (!pool.length) {
+                if (pool.length) {
+                    consider(pool)
+                } else {
                     collectSearchGroups(response).forEach(function (group) {
-                        if (group && group.type !== 'person' && Array.isArray(group.results)) pool = pool.concat(group.results)
+                        if (group && group.type !== 'person' && Array.isArray(group.results)) consider(group.results)
                     })
                 }
-                if (!pool.length) return trySearch(index + 1)
-
-                var best = null
-                if (item.year) {
-                    pool.some(function (result) {
-                        var date = result.release_date || result.first_air_date || ''
-                        if (String(date).slice(0, 4) === String(item.year)) { best = result; return true }
-                        return false
-                    })
-                }
-                if (!best) best = pool[0]
-
-                best.source = 'tmdb'
-                best.kinozal_item = item
-                Lampa.Router.call('full', best)
+                trySearch(index + 1)
             }, function () { trySearch(index + 1) })
         }
 
