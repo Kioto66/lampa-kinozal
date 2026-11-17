@@ -271,10 +271,10 @@
         if (!year) return 0
         var diff = year - Number(item.year)
         if (item.type === 'series') {
-            // Год раздачи = год эфира сезона, у TMDB дата старта сериала:
-            // старт обычно в тот же год или раньше (2 сезон 2026 → старт 2024),
-            // чем дальше старт от года сезона, тем длиннее сериал
-            if (diff <= 0 && diff >= -6) return 1 + diff * 0.1
+            // Год раздачи = год эфира сезона, у TMDB дата старта сериала.
+            // Старт может быть сильно раньше (8 сезон 2025 → старт 2016),
+            // поэтому окно до 12 лет, чем ближе — тем выше балл
+            if (diff <= 0 && diff >= -12) return Math.max(0.1, 1 + diff * 0.075)
             if (diff === 1 || diff === 2) return 0.5
             return 0
         }
@@ -328,8 +328,21 @@
         var NAME_MIN = 0.7 // ниже — название не совпало: чужая карточка хуже её отсутствия
         var bestPair = null
 
+        // Разделы, однозначные по стране: карточка обязана быть той же страны
+        // (язык оригинала) — иначе в «Российских сериалах» откроется тёзка
+        // из другой страны («Ищейка» = The Closer в TMDB)
+        function originOk(result) {
+            var lang = String(result.original_language || '')
+            if (origin === 'ru') return !lang || lang === 'ru'
+            if (origin === 'foreign') return !lang || lang !== 'ru'
+            return true
+        }
+
         function finish() {
-            if (bestPair && bestPair.score.name >= NAME_MIN) {
+            // Год обязателен: без него в смешанных разделах нет ни одного
+            // признака страны, и чужая тёзка («Чёрный пёс» другого года)
+            // открылась бы по одному лишь совпадению имени
+            if (bestPair && bestPair.score.name >= NAME_MIN && bestPair.score.year > 0 && originOk(bestPair.result)) {
                 var best = bestPair.result
                 best.source = 'tmdb'
                 best.kinozal_item = item
@@ -347,8 +360,8 @@
         }
 
         function trySearch(index) {
-            // Точное название и правдоподобный год — второй запрос не нужен
-            if (bestPair && bestPair.score.name >= 1 && bestPair.score.year >= 0.5) return finish()
+            // Точное название, правдоподобный год и верная страна — хватит
+            if (bestPair && bestPair.score.name >= 1 && bestPair.score.year >= 0.5 && originOk(bestPair.result)) return finish()
             if (index >= queries.length) return finish()
 
             Lampa.Api.search({ query: queries[index], page: 1 }, function (response) {
