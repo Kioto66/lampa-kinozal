@@ -38,6 +38,13 @@ const IMAGE_PROXY_ENABLED = String(process.env.KINOZAL_IMAGE_PROXY || 'on').toLo
 const IMG_MAX_BYTES = 10 * 1024 * 1024
 const imgInflight = new Map()
 
+// Разделы, однозначные по стране: сервер помечает раздачи, чтобы плагин
+// на ТВ искал карточки с приоритетом нужного языка
+const ORIGIN_BY_CATEGORY = Object.freeze({
+    series_ru: 'ru',
+    series_foreign: 'foreign'
+})
+
 const TOP_CATEGORIES = Object.freeze({
     series: 3,
     series_ru: 31,
@@ -171,6 +178,8 @@ async function fetchPublicTop(category, period) {
     const html = new TextDecoder('windows-1251').decode(bytes)
     const parsed = parseTopPage(html)
     if (category.indexOf('series') === 0) parsed.forEach(item => { item.type = 'series' })
+    const publicOrigin = ORIGIN_BY_CATEGORY[category] || ''
+    if (publicOrigin) parsed.forEach(item => { item.origin = publicOrigin })
     return { url, results: parsed }
 }
 
@@ -316,6 +325,10 @@ async function loadBrowserTop(category, period) {
 
     // В сериальных разделах Кинозала тип определяем по разделу, а не по названию.
     if (category.indexOf('series') === 0) results.forEach(item => { item.type = 'series' })
+
+    // Метка страны раздела — плагину для приоритета языка при поиске карточек
+    const origin = ORIGIN_BY_CATEGORY[category] || ''
+    if (origin) results.forEach(item => { item.origin = origin })
 
     return { url, results }
 }
