@@ -906,6 +906,11 @@ function plFindChartTopic(html, kind) {
 
 // Первый пост темы-чарта: группы-разделы (ссылки на viewforum) + пункты
 // «позиция <a viewtopic>название</a> автор (размер)». Режем по заголовкам групп.
+// Топ-группы, которые в чартах недели/месяца не показываем: эротические видео,
+// зарубежные порнофильмы (вкл. DVD/HD), японское и китайское, фото и журналы,
+// хентай и манга (+ мульт/комиксы), игры (по просьбе пользователя 17.11)
+const PL_CHART_SKIP_FORUMS = new Set([1670, 1672, 1717, 1800, 1723, 1745, 1838])
+
 function plParseChart(html) {
     const start = html.indexOf('post_body" id="p-')
     const end = start >= 0 ? html.indexOf('post_body-->', start) : -1
@@ -913,15 +918,20 @@ function plParseChart(html) {
 
     const items = []
     const seen = new Set()
-    const headerRe = /viewforum\.php\?f=\d+" class="postLink">([^<]{2,120})</g
-    let header = ''
+    const headerRe = /viewforum\.php\?f=(\d+)" class="postLink">([^<]{2,200})</g
+    let topParent = 0
     let positions = []
     let m
-    while ((m = headerRe.exec(body)) !== null) positions.push({ at: m.index, name: plDecodeHtml(m[1]).trim() })
-    positions.push({ at: body.length, name: '' })
+    while ((m = headerRe.exec(body)) !== null) positions.push({ at: m.index, f: Number(m[1]), name: plDecodeHtml(m[2]).trim() })
+    positions.push({ at: body.length, f: 0, name: '' })
 
     for (let i = 0; i < positions.length - 1; i++) {
-        const segment = body.slice(positions[i].at, positions[i + 1].at)
+        const header = positions[i]
+        // URL-текст у заголовка = топ-группа; именованные — её подфорумы
+        if (header.f && /^https?:/i.test(header.name)) topParent = header.f
+        else if (header.f && !topParent) topParent = header.f
+        if (PL_CHART_SKIP_FORUMS.has(topParent)) continue
+        const segment = body.slice(header.at, positions[i + 1].at)
         const itemRe = /viewtopic\.php\?t=(\d+)" class="postLink">([\s\S]{5,500}?)<\/a>([\s\S]{0,300}?post-u">\(([^)]{2,20})\))?/g
         let im
         while ((im = itemRe.exec(segment)) !== null) {
