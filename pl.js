@@ -13,6 +13,9 @@
     var SECTIONS = [
         { value: 'week', title: 'Популярное за неделю' },
         { value: 'month', title: 'Популярное за месяц' },
+        { value: 'top_ru', title: 'Русское порно — топ недели (по сидам)' },
+        { value: 'top_clips', title: 'Зарубежные порноролики — топ недели (по сидам)' },
+        { value: 'top_spec', title: 'Нетрадиционное порно — топ недели (по сидам)' },
         { value: 'siterips', title: 'Сайтрипы 2026' },
         { value: 'siterips_hd', title: 'Сайтрипы 2026 (HD)' },
         { value: 'siterips_ru', title: 'Сайтрипы с русскими актрисами' },
@@ -629,7 +632,7 @@
     function registerSettings() {
         if (!Lampa.SettingsApi || !Lampa.SettingsApi.addComponent || !Lampa.SettingsApi.addParam) return
         Lampa.SettingsApi.addComponent({ component: NS + 'settings', name: NAME, icon: '' })
-        Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'section', type: 'select', values: { week: 'Популярное за неделю', month: 'Популярное за месяц', siterips: 'Сайтрипы 2026', siterips_hd: 'Сайтрипы 2026 (HD)', siterips_ru: 'Сайтрипы с русскими актрисами', siterips_ru_hd: 'Сайтрипы с русскими актрисами (HD)', gangbang: 'Гэнг-бэнг', fisting: 'Фистинг и дилдо' }, default: 'week' }, field: { name: 'Раздел' } })
+        Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'section', type: 'select', values: { week: 'Популярное за неделю', month: 'Популярное за месяц', top_ru: 'Русское порно — топ недели (по сидам)', top_clips: 'Зарубежные порноролики — топ недели (по сидам)', top_spec: 'Нетрадиционное порно — топ недели (по сидам)', siterips: 'Сайтрипы 2026', siterips_hd: 'Сайтрипы 2026 (HD)', siterips_ru: 'Сайтрипы с русскими актрисами', siterips_ru_hd: 'Сайтрипы с русскими актрисами (HD)', gangbang: 'Гэнг-бэнг', fisting: 'Фистинг и дилдо' }, default: 'week' }, field: { name: 'Раздел' } })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'proxy_url', type: 'input', values: '', default: DEFAULT_PROXY_URL }, field: { name: 'URL локального API', description: 'По умолчанию: ' + DEFAULT_PROXY_URL } })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'player', type: 'select', values: { auto: 'Авто (MKV/торренты — Android-плеер)', lampa: 'Всегда внутренний плеер LAMPA', android: 'Всегда Android-плеер' }, default: 'auto' }, field: { name: 'Плеер', description: 'Android-плеер корректно читает MKV с DTS/TrueHD' } })
         Lampa.SettingsApi.addParam({ component: NS + 'settings', param: { name: NS + 'torr_url', type: 'input', values: '', default: 'http://192.168.11.145:8090' }, field: { name: 'TorrServer', description: 'Если не задан в настройках LAMPA (по умолчанию: 192.168.11.145:8090)' } })

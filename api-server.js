@@ -957,6 +957,8 @@ async function plList(section) {
         const topicId = plFindChartTopic(forumHtml, section)
         if (!topicId) throw new Error('Не нашёл тему чарта (' + (section === 'week' ? 'неделя' : 'месяц') + ') на Pornolab')
         items = plParseChart(await plFetchLogged(`${PL_BASE}/viewtopic.php?t=${topicId}`))
+    } else if (PL_TOP_SECTIONS[section]) {
+        items = plParseTrackerTop(await plPostTracker(PL_TOP_SECTIONS[section].forums))
     } else {
         const forum = PL_FORUMS[section]
         if (!forum) throw new Error('Неизвестный раздел PL: ' + section)
@@ -1128,6 +1130,79 @@ async function plEnsurePage() {
         await plPageList.goto(PL_BASE + '/index.php', { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {})
     })().catch(e => { plPagesReady = null; throw e })
     return plPagesReady
+}
+
+/*
+ * Топ-разделы «по сидам за неделю»: POST-поиск tracker.php по листовым
+ * подфорумам. Родительские категории трекер сам не разворачивает —
+ * перечисляем их содержимое, как делает скрипт формы при выборе группы.
+ * Сортировка o=10 (сид по убыванию, s=2), период tm=7 (неделя).
+ */
+const PL_TOP_SECTIONS = Object.freeze({
+    top_ru: {
+        title: 'Русское порно — топ недели',
+        forums: [902, 1675, 36, 1830, 1803, 1831, 1877, 1878, 1741, 1676],
+    },
+    top_clips: {
+        title: 'Зарубежные порноролики — топ недели',
+        forums: [1780, 1110, 1678, 1124, 1784, 1769, 1793, 1797, 1804, 1819, 1825, 1836, 1842, 1846, 1857, 1861, 1867, 1872, 1875, 1451, 1788, 1789, 1792, 1798, 1805, 1820, 1826, 1837, 1843, 1847, 1856, 1862, 1868, 1873, 1876, 1707, 1874, 284, 1853, 1823],
+    },
+    top_spec: {
+        title: 'Нетрадиционное порно — топ недели',
+        forums: [1715, 1680, 1758, 1682, 1733, 1754, 1734, 1791, 509, 1859, 1685, 1762, 1881, 1681],
+    },
+})
+
+async function plPostTracker(forums) {
+    await plEnsurePage()
+    const run = plListChain.then(async () => {
+        return plPageList.evaluate(async (ids) => {
+            const params = new URLSearchParams()
+            ;['prev_my', 'prev_new', 'prev_oop', 'prev_sfl', 'prev_stg'].forEach(k => params.append(k, '0'))
+            ids.forEach(id => params.append('f[]', String(id)))
+            params.append('o', '10') // сиды
+            params.append('s', '2') // по убыванию
+            params.append('tm', '7') // неделя
+            ;['df', 'dt', 'pn', 'fsz', 'nm', 'mw'].forEach(k => params.append(k, ''))
+            const r = await fetch('/forum/tracker.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: params.toString(),
+                credentials: 'include',
+            })
+            const bytes = await r.arrayBuffer()
+            return new TextDecoder('windows-1251').decode(bytes)
+        }, forums)
+    })
+    plListChain = run.catch(() => '')
+    const html = await run
+    plLastDebug = `top len=${html.length} tlinks=${(html.match(/tLink/g) || []).length}`
+    return html
+}
+
+// Сиды отдаются задвоенно (<u>216</u><b class="seedmed">216</b>) — «216216»
+function plUnDouble(s) {
+    s = String(s || '')
+    if (s.length % 2 === 0 && s.slice(0, s.length / 2) === s.slice(s.length / 2)) return s.slice(0, s.length / 2)
+    return s
+}
+
+function plParseTrackerTop(html) {
+    const items = []
+    const seen = new Set()
+    for (const row of (html.match(/<tr class="tCenter">[\s\S]*?<\/tr>/g) || [])) {
+        const tMatch = row.match(/tLink[^>]*href="[^"]*viewtopic\.php\?t=(\d+)"[^>]*>([\s\S]*?)<\/a>/)
+        if (!tMatch) continue
+        const id = tMatch[1]
+        if (seen.has(id)) continue
+        const title = plDecodeHtml(tMatch[2].replace(/<wbr>/gi, '').replace(/<[^>]+>/g, '')).replace(/\s+/g, ' ').trim()
+        if (!title || plIsPhotoSet(title)) continue
+        seen.add(id)
+        const sizeHuman = plDecodeHtml((row.match(/dl\.php\?t=\d+"[^>]*>([^<]+)</) || [])[1] || '').replace(/&nbsp;/g, ' ').trim()
+        const seedDigits = (row.match(/<b class="seedmed">(\d+)<\/b>/) || [])[1] || (row.match(/<td class="row4 seedmed">([\s\S]*?)<\/td>/) || ['', ''])[1].replace(/\D/g, '')
+        items.push(plCardItem(id, title, sizeHuman, Number(plUnDouble(seedDigits)) || 0))
+    }
+    return items
 }
 
 async function plCard(topicId) {
@@ -1385,7 +1460,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && url.pathname === '/pl/v1/list') {
         const section = String(url.searchParams.get('section') || 'week')
-        if (section !== 'week' && section !== 'month' && !PL_FORUMS[section]) return sendJson(res, 400, { ok: false, message: 'Неизвестный раздел PL' })
+        if (section !== 'week' && section !== 'month' && !PL_FORUMS[section] && !PL_TOP_SECTIONS[section]) return sendJson(res, 400, { ok: false, message: 'Неизвестный раздел PL' })
         const limit = Math.min(50, Math.max(10, Number(url.searchParams.get('limit') || 50) || 50))
         const page = Math.max(1, Number(url.searchParams.get('page') || 1) || 1)
         try {
