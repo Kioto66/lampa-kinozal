@@ -25,8 +25,13 @@ function plParseTrackerTop(html) {
     if (!title || PL_IS_PHOTO(title)) continue
     seen.add(id)
     const sizeHuman = PL_DECODE((row.match(/dl\.php\?t=\d+"[^>]*>([^<]+)</) || [])[1] || '').replace(/&nbsp;/g, ' ').trim()
-    const seedDigits = (row.match(/<b class="seedmed">(\d+)<\/b>/) || [])[1] || (row.match(/<td class="row4 seedmed">([\s\S]*?)<\/td>/) || ['', ''])[1].replace(/\D/g, '')
-    items.push({ id, title, size: sizeHuman, seeds: Number(plUnDouble(seedDigits)) || 0 })
+    const seedB = (row.match(/<b class="seedmed">(\d+)<\/b>/) || [])[1]
+    let seeds = seedB ? Number(seedB) : 0
+    if (!seedB) {
+      const seedCell = (row.match(/<td class="row4 seedmed">([\s\S]*?)<\/td>/) || ['', ''])[1].replace(/<[^>]+>/g, '').replace(/\D/g, '')
+      seeds = Number(plUnDouble(seedCell)) || 0
+    }
+    items.push({ id, title, size: sizeHuman, seeds })
   }
   return items
 }

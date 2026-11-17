@@ -1199,8 +1199,15 @@ function plParseTrackerTop(html) {
         if (!title || plIsPhotoSet(title)) continue
         seen.add(id)
         const sizeHuman = plDecodeHtml((row.match(/dl\.php\?t=\d+"[^>]*>([^<]+)</) || [])[1] || '').replace(/&nbsp;/g, ' ').trim()
-        const seedDigits = (row.match(/<b class="seedmed">(\d+)<\/b>/) || [])[1] || (row.match(/<td class="row4 seedmed">([\s\S]*?)<\/td>/) || ['', ''])[1].replace(/\D/g, '')
-        items.push(plCardItem(id, title, sizeHuman, Number(plUnDouble(seedDigits)) || 0))
+        // Сид берём из <b class="seedmed"> — там он уже точный; удвоение
+        // получается только при склейке текста всей ячейки (u + b)
+        const seedB = (row.match(/<b class="seedmed">(\d+)<\/b>/) || [])[1]
+        let seeds = seedB ? Number(seedB) : 0
+        if (!seedB) {
+            const seedCell = (row.match(/<td class="row4 seedmed">([\s\S]*?)<\/td>/) || ['', ''])[1].replace(/<[^>]+>/g, '').replace(/\D/g, '')
+            seeds = Number(plUnDouble(seedCell)) || 0
+        }
+        items.push(plCardItem(id, title, sizeHuman, seeds))
     }
     return items
 }
